@@ -1,0 +1,445 @@
+generator client {
+  provider        = "prisma-client-js"
+  output          = "../node_modules/.prisma/client"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Auth / Multi-tenant ──────────────────────────────────────────────────────
+
+model Profile {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  password     String
+  nomeCompleto String?
+  celular      String?
+  role         String   @default("user") // "admin" | "user"
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  accountMembers         AccountMember[]
+  listas                 Lista[]
+  campanhas              Campanha[]
+  interacoes             Interacao[]
+  userRole               UserRole?
+
+  @@map("profiles")
+}
+
+model Account {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  status    String   @default("active")
+  planId    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  plan               Plan?                  @relation(fields: [planId], references: [id])
+  members            AccountMember[]
+  listas             Lista[]
+  campanhas          Campanha[]
+  whatsappConexoes   WhatsappConexao[]
+  credenciais        Credencial[]
+  sdrConfiguracao    SdrConfiguracao?
+  iaConfig           IaConfiguracaoEstilo?
+  metaTemplateWabas  MetaTemplateWaba[]
+  userInvites        UserInvite[]
+  interacoes         Interacao[]
+
+  @@map("accounts")
+}
+
+model AccountMember {
+  id        String   @id @default(uuid())
+  accountId String
+  userId    String
+  role      String   @default("member") // "owner" | "member"
+  createdAt DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  user    Profile @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, userId])
+  @@map("account_members")
+}
+
+model UserRole {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  role      String   @default("user")
+  createdAt DateTime @default(now())
+
+  user Profile @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_roles")
+}
+
+model UserInvite {
+  id        String    @id @default(uuid())
+  email     String
+  token     String    @unique
+  accountId String?
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  account Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@map("user_invites")
+}
+
+// ─── Planos ──────────────────────────────────────────────────────────────────
+
+model Plan {
+  id        String   @id @default(uuid())
+  name      String
+  price     Decimal
+  limits    Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  accounts Account[]
+
+  @@map("plans")
+}
+
+// ─── Prospecção ───────────────────────────────────────────────────────────────
+
+model Parceiro {
+  id                   String   @id @default(uuid())
+  nomeFantasia         String
+  razaoSocial          String?
+  cnpj                 String?
+  contatoResponsavel   String?
+  whatsappResponsavel  String?
+  email                String?
+  cidade               String?
+  estado               String?
+  segmento             String?
+  createdAt            DateTime @default(now())
+
+  listas Lista[]
+
+  @@map("parceiros")
+}
+
+model Lista {
+  id                    String    @id @default(uuid())
+  nome                  String
+  origem                String    // google_maps | parceiro_inativo | econodata | importacao
+  segmento              String?
+  cidade                String?
+  estado                String?
+  parceiroId            String?
+  userId                String?
+  accountId             String
+  googleNextPageToken   String?
+  googlePlaceIds        String[]  @default([])
+  googleVariacoesIa     String[]  @default([])
+  dataCriacao           DateTime  @default(now())
+
+  parceiro      Parceiro?      @relation(fields: [parceiroId], references: [id], onDelete: SetNull)
+  user          Profile?       @relation(fields: [userId], references: [id])
+  account       Account        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  listaContatos ListaContato[]
+  campanhas     Campanha[]
+  regioesBusca  RegiaoBusca[]
+
+  @@map("listas")
+}
+
+model Contato {
+  id            String   @id @default(uuid())
+  nomeEmpresa   String
+  contatoNome   String?
+  telefone      String
+  endereco      String?
+  cidade        String?
+  estado        String?
+  cnpj          String?
+  atividade     String?
+  atividadePrincipal   String?
+  ganchoPersonalizacao String?
+  provaSocial          String?
+  origemCasaDados      String?
+  updatedAt     DateTime @updatedAt
+  createdAt     DateTime @default(now())
+
+  listaContatos    ListaContato[]
+  interacoes       Interacao[]
+  oportunidades    Oportunidade[]
+  campanhaContatos CampanhaContato[]
+
+  @@map("contatos")
+}
+
+model ListaContato {
+  id            String   @id @default(uuid())
+  listaId       String
+  contatoId     String
+  statusWhatsapp String  @default("nao_validado") // nao_validado | valido | invalido
+  mensagemEnviada Boolean @default(false)
+  fonteBusca    String?
+  statusNaLista String   @default("novo") // novo | abordado | interessado | nao_interessado | nao_contatar
+  createdAt     DateTime @default(now())
+
+  lista   Lista   @relation(fields: [listaId], references: [id], onDelete: Cascade)
+  contato Contato @relation(fields: [contatoId], references: [id], onDelete: Cascade)
+
+  @@unique([listaId, contatoId])
+  @@map("lista_contato")
+}
+
+model RegiaoBusca {
+  id          String   @id @default(uuid())
+  listaId     String
+  query       String
+  cidade      String?
+  estado      String?
+  executada   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  lista Lista @relation(fields: [listaId], references: [id], onDelete: Cascade)
+
+  @@map("regioes_busca")
+}
+
+// ─── Campanhas ────────────────────────────────────────────────────────────────
+
+model Campanha {
+  id                 String    @id @default(uuid())
+  nome               String
+  listaId            String
+  tipo               String    // prospeccao_fria | reativacao_inativos
+  limiteEnviosDia    Int       @default(20)
+  delayMinutos       Int       @default(3)
+  mensagemBase       String
+  horarioInicio      String    @default("09:00:00")
+  horarioFim         String    @default("18:00:00")
+  ativo              Boolean   @default(true)
+  conexaoId          String?
+  providerDisparo    String?   // meta_official | uazapi
+  userId             String?
+  accountId          String
+  mediaUrl           String?
+  mediaType          String?
+  createdAt          DateTime  @default(now())
+
+  lista            Lista             @relation(fields: [listaId], references: [id], onDelete: Cascade)
+  conexao          WhatsappConexao?  @relation(fields: [conexaoId], references: [id], onDelete: SetNull)
+  user             Profile?          @relation(fields: [userId], references: [id])
+  account          Account           @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  campanhaContatos CampanhaContato[]
+
+  @@map("campanhas")
+}
+
+model CampanhaContato {
+  id               String    @id @default(uuid())
+  campanhaId       String
+  contatoId        String
+  etapa            String    @default("nao_abordado") // nao_abordado | primeira_msg | finalizado
+  resultado        String?   // sem_resposta | interessado | nao_interessado | erro_numero
+  dataUltimaAcao   DateTime?
+  createdAt        DateTime  @default(now())
+
+  campanha Campanha @relation(fields: [campanhaId], references: [id], onDelete: Cascade)
+  contato  Contato  @relation(fields: [contatoId], references: [id], onDelete: Cascade)
+
+  @@unique([campanhaId, contatoId])
+  @@map("campanha_contato")
+}
+
+// ─── CRM / Interações ─────────────────────────────────────────────────────────
+
+model Interacao {
+  id              String    @id @default(uuid())
+  contatoId       String
+  campanhaId      String?
+  accountId       String?
+  userId          String?
+  data            DateTime  @default(now())
+  direcao         String    // enviado | recebido
+  canal           String    @default("whatsapp")
+  conteudo        String
+  editado         Boolean   @default(false)
+  mediaUrl        String?
+  mediaType       String?
+  externalId      String?   // ID da mensagem no provider
+  classificacaoIa String?
+
+  contato   Contato   @relation(fields: [contatoId], references: [id], onDelete: Cascade)
+  account   Account?  @relation(fields: [accountId], references: [id])
+  user      Profile?  @relation(fields: [userId], references: [id])
+  reactions InteracaoReaction[]
+  historico InteracaoHistoricoEdicao[]
+
+  @@map("interacoes")
+}
+
+model InteracaoReaction {
+  id          String   @id @default(uuid())
+  interacaoId String
+  emoji       String
+  userId      String?
+  createdAt   DateTime @default(now())
+
+  interacao Interacao @relation(fields: [interacaoId], references: [id], onDelete: Cascade)
+
+  @@map("interacao_reactions")
+}
+
+model InteracaoHistoricoEdicao {
+  id               String   @id @default(uuid())
+  interacaoId      String
+  conteudoAnterior String
+  editadoEm        DateTime @default(now())
+
+  interacao Interacao @relation(fields: [interacaoId], references: [id], onDelete: Cascade)
+
+  @@map("interacao_historico_edicao")
+}
+
+model Oportunidade {
+  id                String    @id @default(uuid())
+  contatoId         String
+  origemCampanhaId  String?
+  etapa             String    // novo | contato_feito | proposta | negociacao | fechado | perdido
+  valorEstimado     Decimal?
+  dataCriacao       DateTime  @default(now())
+
+  contato Contato @relation(fields: [contatoId], references: [id], onDelete: Cascade)
+
+  @@map("oportunidades")
+}
+
+// ─── Integrações / Config ─────────────────────────────────────────────────────
+
+model ConfiguracaoIntegracao {
+  id          String   @id @default(uuid())
+  chave       String   @unique
+  valor       String?
+  ativa       Boolean  @default(true)
+  statusTeste String   @default("nao_testado")
+  atualizadoEm DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  @@map("configuracoes_integracoes")
+}
+
+model Credencial {
+  id                  String   @id @default(uuid())
+  accountId           String
+  chave               String
+  valorCriptografado  String
+  ativa               Boolean  @default(true)
+  statusTeste         String   @default("nao_testado")
+  atualizadoEm        DateTime @default(now())
+  createdAt           DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, chave], name: "accountId_chave")
+  @@map("credenciais")
+}
+
+model WhatsappConexao {
+  id             String   @id @default(uuid())
+  accountId      String
+  provider       String   // meta_official | uazapi
+  status         String   @default("disconnected")
+  numeroTelefone String?
+  apelido        String?
+  wabaId         String?
+  phoneNumberId  String?
+  accessToken    String?
+  instanceName   String?
+  instanceKey    String?
+  userId         String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  account   Account    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  campanhas Campanha[]
+
+  @@map("whatsapp_conexoes")
+}
+
+// ─── Meta / Templates ─────────────────────────────────────────────────────────
+
+model MetaTemplate {
+  id        String   @id @default(uuid())
+  nome      String
+  categoria String   // MARKETING | UTILITY | AUTHENTICATION
+  idioma    String   @default("pt_BR")
+  corpo     String
+  variaveis Json?
+  status    String   @default("pending")
+  metaId    String?
+  createdAt DateTime @default(now())
+
+  wabaLinks MetaTemplateWaba[]
+
+  @@map("meta_templates")
+}
+
+model MetaTemplateWaba {
+  id         String   @id @default(uuid())
+  templateId String
+  accountId  String
+  wabaId     String
+  statusWaba String   @default("processing")
+  createdAt  DateTime @default(now())
+
+  template MetaTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  account  Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([templateId, wabaId])
+  @@map("meta_template_waba")
+}
+
+// ─── SDR / IA ─────────────────────────────────────────────────────────────────
+
+model SdrConfiguracao {
+  id                    String   @id @default(uuid())
+  accountId             String   @unique
+  ativo                 Boolean  @default(false)
+  mensagemFollowup1     String?
+  mensagemFollowup2     String?
+  delayFollowup1Horas   Int?
+  delayFollowup2Horas   Int?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@map("sdr_configuracao")
+}
+
+model IaConfiguracaoEstilo {
+  id                String   @id @default(uuid())
+  accountId         String   @unique
+  estiloResposta    String   @default("Seja cordial, direto ao ponto e profissional.")
+  exemplosMensagens String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@map("ia_configuracao_estilo")
+}
+
+model FunctionRateLimit {
+  id           String   @id @default(uuid())
+  userId       String
+  functionName String
+  callCount    Int      @default(1)
+  windowStart  DateTime @default(now())
+  lastCallAt   DateTime @default(now())
+
+  @@unique([userId, functionName])
+  @@map("function_rate_limits")
+}
