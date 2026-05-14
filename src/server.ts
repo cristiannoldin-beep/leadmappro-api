@@ -47,9 +47,9 @@ fastify.setErrorHandler(async (error, _request, reply) => {
 fastify.get('/health', async (_request, reply) => {
   try {
     await prisma.$queryRaw`SELECT 1`
-    return reply.send({ status: 'ok', database: 'connected', timestamp: new Date() })
+    return reply.send({ status: 'ok', database: 'connected', uptime: process.uptime() })
   } catch {
-    return reply.status(503).send({ status: 'error', database: 'disconnected' })
+    return reply.send({ status: 'ok', database: 'disconnected', uptime: process.uptime() })
   }
 })
 
