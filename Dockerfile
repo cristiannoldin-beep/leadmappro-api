@@ -1,11 +1,11 @@
 FROM node:22-slim AS builder
 WORKDIR /app
 
-RUN apt-get update -y && apt-get install -y openssl
+RUN apt-get update -y && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
 COPY prisma ./prisma/
-RUN npm install
+RUN npm install --include=dev
 
 COPY . .
 RUN npx prisma generate
