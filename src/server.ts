@@ -40,7 +40,8 @@ fastify.register(jwt, { secret: process.env.JWT_SECRET })
 
 fastify.setErrorHandler(async (error, _request, reply) => {
   fastify.log.error(error)
-  if (!reply.sent) reply.status((error as { statusCode?: number }).statusCode ?? 500).send({ message: error.message })
+  const err = error as Error & { statusCode?: number }
+  if (!reply.sent) reply.status(err.statusCode ?? 500).send({ message: err.message })
 })
 
 fastify.get('/health', async (_request, reply) => {
