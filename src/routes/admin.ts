@@ -191,4 +191,41 @@ export async function adminRoutes(app: FastifyInstance) {
     })
     return reply.send({ success: true })
   })
+
+  app.post('/admin/credenciais/testar', { preValidation: [requireAdmin] }, async (request, reply) => {
+    const { tipo } = z.object({ tipo: z.enum(['google_maps', 'openai']) }).parse(request.body)
+    const chave = tipo === 'google_maps' ? 'GOOGLE_MAPS_API_KEY' : 'OPENAI_API_KEY'
+
+    const config = await prisma.configuracaoIntegracao.findUnique({ where: { chave } })
+    if (!config?.valor) return reply.status(400).send({ sucesso: false, mensagem: 'Chave não configurada.' })
+
+    const key = config.valor
+    let sucesso = false
+    let mensagem = ''
+
+    try {
+      if (tipo === 'google_maps') {
+        const res = await fetch(`https://maps.googleapis.com/maps/api/place/textsearch/json?query=restaurante&key=${key}`)
+        const data = await res.json() as { status: string; error_message?: string }
+        sucesso = data.status === 'OK' || data.status === 'ZERO_RESULTS'
+        mensagem = sucesso ? 'Google Maps API funcionando corretamente!' : `Erro: ${data.status}${data.error_message ? ' — ' + data.error_message : ''}`
+      } else {
+        const res = await fetch('https://api.openai.com/v1/models', {
+          headers: { Authorization: `Bearer ${key}` },
+        })
+        const data = await res.json() as { error?: { message: string } }
+        sucesso = res.ok
+        mensagem = sucesso ? 'OpenAI API key válida e funcionando!' : `Erro: ${data.error?.message ?? 'Chave inválida'}`
+      }
+    } catch (err: unknown) {
+      mensagem = `Falha de rede: ${err instanceof Error ? err.message : 'erro desconhecido'}`
+    }
+
+    await prisma.configuracaoIntegracao.update({
+      where: { chave },
+      data: { statusTeste: sucesso ? 'sucesso' : 'erro' },
+    })
+
+    return reply.send({ sucesso, mensagem })
+  })
 }
