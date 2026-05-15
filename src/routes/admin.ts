@@ -138,10 +138,10 @@ export async function adminRoutes(app: FastifyInstance) {
     const body = z.object({
       name: z.string().optional(),
       price: z.number().optional(),
-      limits: z.record(z.unknown()).optional(),
+      limits: z.any().optional(),
     }).parse(request.body)
 
-    const plan = await prisma.plan.update({ where: { id }, data: body })
+    const plan = await prisma.plan.update({ where: { id }, data: body as { name?: string; price?: number; limits?: object } })
     return reply.send({ plan })
   })
 
@@ -169,5 +169,26 @@ export async function adminRoutes(app: FastifyInstance) {
       prisma.whatsappConexao.count(),
     ])
     return reply.send({ stats: { profiles, accounts, conexoes } })
+  })
+
+  // ── Credenciais (configuracoes_integracoes) ───────────────────────────────
+  app.get('/admin/credenciais/:chave', { preValidation: [requireAdmin] }, async (request, reply) => {
+    const { chave } = z.object({ chave: z.string().min(1) }).parse(request.params)
+    const config = await prisma.configuracaoIntegracao.findUnique({ where: { chave } })
+    return reply.send({ configured: !!(config?.valor), statusTeste: config?.statusTeste ?? 'nao_testado' })
+  })
+
+  app.post('/admin/credenciais', { preValidation: [requireAdmin] }, async (request, reply) => {
+    const body = z.object({
+      chave: z.string().min(1),
+      valor: z.string().min(1),
+    }).parse(request.body)
+
+    await prisma.configuracaoIntegracao.upsert({
+      where: { chave: body.chave },
+      update: { valor: body.valor, atualizadoEm: new Date() },
+      create: { chave: body.chave, valor: body.valor },
+    })
+    return reply.send({ success: true })
   })
 }
