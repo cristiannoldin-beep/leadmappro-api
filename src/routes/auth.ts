@@ -11,6 +11,13 @@ export async function authRoutes(app: FastifyInstance) {
       password: z.string().min(6),
       nomeCompleto: z.string().min(2),
       celular: z.string().min(10, 'Informe seu WhatsApp').transform(v => v.trim()),
+      cep: z.string().min(8).transform(v => v.replace(/\D/g, '')).optional(),
+      logradouro: z.string().min(2).optional(),
+      numero: z.string().min(1).optional(),
+      complemento: z.string().optional().transform(v => v?.trim() || undefined),
+      bairro: z.string().min(2).optional(),
+      cidade: z.string().min(2).optional(),
+      estado: z.string().length(2).optional(),
     }).parse(request.body)
 
     const existing = await prisma.profile.findUnique({ where: { email: body.email } })
@@ -29,6 +36,13 @@ export async function authRoutes(app: FastifyInstance) {
           password: hash,
           nomeCompleto: body.nomeCompleto,
           celular: body.celular,
+          cep: body.cep,
+          logradouro: body.logradouro,
+          numero: body.numero,
+          complemento: body.complemento,
+          bairro: body.bairro,
+          cidade: body.cidade,
+          estado: body.estado,
           role: totalUsers === 0 ? 'admin' : 'user',
         },
       })

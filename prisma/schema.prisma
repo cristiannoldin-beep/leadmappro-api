@@ -17,6 +17,13 @@ model Profile {
   password     String
   nomeCompleto String?
   celular      String?
+  cep          String?
+  logradouro   String?
+  numero       String?
+  complemento  String?
+  bairro       String?
+  cidade       String?
+  estado       String?
   role         String   @default("user") // "admin" | "user"
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
