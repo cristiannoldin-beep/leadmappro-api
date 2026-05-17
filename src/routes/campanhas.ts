@@ -2,6 +2,136 @@ import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma'
 import { requireAuth, JwtPayload } from '../lib/auth'
+import { decrypt } from '../lib/encryption'
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function processSpintax(text: string): string {
+  return text.replace(/\{([^{}]+)\}/g, (_, options) => {
+    const parts = options.split('|')
+    return parts[Math.floor(Math.random() * parts.length)].trim()
+  })
+}
+
+function personalizeMessage(template: string, contato: { nomeEmpresa: string; cidade?: string | null; estado?: string | null }): string {
+  return template
+    .replace(/\{nome_empresa\}/gi, contato.nomeEmpresa)
+    .replace(/\{cidade\}/gi, contato.cidade ?? '')
+    .replace(/\{estado\}/gi, contato.estado ?? '')
+}
+
+function isWithinHorario(horarioInicio: string, horarioFim: string): boolean {
+  const now = new Date()
+  const [hiH, hiM] = horarioInicio.split(':').map(Number)
+  const [hfH, hfM] = horarioFim.split(':').map(Number)
+  const nowMinutes = now.getHours() * 60 + now.getMinutes()
+  const inicioMinutes = hiH * 60 + hiM
+  const fimMinutes = hfH * 60 + hfM
+  return nowMinutes >= inicioMinutes && nowMinutes <= fimMinutes
+}
+
+async function getCredencial(accountId: string, chave: string): Promise<string | null> {
+  const cred = await prisma.credencial.findUnique({
+    where: { accountId_chave: { accountId, chave } },
+  })
+  if (!cred?.ativa) return null
+  return decrypt(cred.valorCriptografado)
+}
+
+async function sendWhatsappMessage(waha: { baseUrl: string; instanceKey: string }, phone: string, message: string): Promise<boolean> {
+  try {
+    const numero = phone.startsWith('55') ? phone : `55${phone}`
+    const res = await fetch(`${waha.baseUrl}/v1/messages/text`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'instance-key': waha.instanceKey },
+      body: JSON.stringify({ phone: numero, body: message }),
+    })
+    return res.ok
+  } catch { return false }
+}
+
+async function dispararCampanha(campanhaId: string): Promise<{ enviados: number; erros: number; ignorados: number }> {
+  const campanha = await prisma.campanha.findUnique({
+    where: { id: campanhaId },
+    include: { conexao: true },
+  })
+  if (!campanha || !campanha.ativo) return { enviados: 0, erros: 0, ignorados: 0 }
+
+  if (!isWithinHorario(campanha.horarioInicio, campanha.horarioFim)) {
+    return { enviados: 0, erros: 0, ignorados: 0 }
+  }
+
+  // Verificar conexão WAHA
+  const conexao = campanha.conexao ?? await prisma.whatsappConexao.findFirst({
+    where: { accountId: campanha.accountId, status: 'connected' },
+    orderBy: { createdAt: 'asc' },
+  })
+  if (!conexao) return { enviados: 0, erros: 0, ignorados: 0 }
+
+  const baseUrl = (await getCredencial(campanha.accountId, 'UAZAPI_BASE_URL')) ?? 'https://api.uazapi.com'
+  const waha = { baseUrl, instanceKey: conexao.instanceKey ?? '' }
+
+  // Contar envios de hoje
+  const hoje = new Date()
+  hoje.setHours(0, 0, 0, 0)
+  const enviadosHoje = await prisma.campanhaContato.count({
+    where: {
+      campanhaId,
+      etapa: { not: 'nao_abordado' },
+      dataUltimaAcao: { gte: hoje },
+    },
+  })
+
+  const restante = campanha.limiteEnviosDia - enviadosHoje
+  if (restante <= 0) return { enviados: 0, erros: 0, ignorados: 0 }
+
+  // Buscar próximos contatos a disparar
+  const pendentes = await prisma.campanhaContato.findMany({
+    where: { campanhaId, etapa: 'nao_abordado' },
+    include: { contato: { select: { nomeEmpresa: true, telefone: true, cidade: true, estado: true } } },
+    take: restante,
+    orderBy: { createdAt: 'asc' },
+  })
+
+  let enviados = 0, erros = 0, ignorados = 0
+
+  for (const cc of pendentes) {
+    const telefone = cc.contato.telefone?.replace(/\D/g, '') ?? ''
+    if (telefone.length < 10) {
+      await prisma.campanhaContato.update({ where: { id: cc.id }, data: { etapa: 'finalizado', resultado: 'erro_numero', dataUltimaAcao: new Date() } })
+      ignorados++
+      continue
+    }
+
+    const msgSpintax = processSpintax(campanha.mensagemBase)
+    const msgFinal = personalizeMessage(msgSpintax, cc.contato)
+
+    const ok = await sendWhatsappMessage(waha, telefone, msgFinal)
+
+    await prisma.campanhaContato.update({
+      where: { id: cc.id },
+      data: {
+        etapa: 'primeira_msg',
+        resultado: ok ? null : 'sem_resposta',
+        dataUltimaAcao: new Date(),
+      },
+    })
+
+    // Marcar mensagem enviada no ListaContato se possível
+    await prisma.listaContato.updateMany({
+      where: { listaId: campanha.listaId, contatoId: cc.contatoId },
+      data: { mensagemEnviada: true },
+    })
+
+    if (ok) enviados++; else erros++
+
+    if (cc !== pendentes[pendentes.length - 1]) {
+      await new Promise(r => setTimeout(r, campanha.delayMinutos * 60_000))
+    }
+  }
+
+  return { enviados, erros, ignorados }
+}
 
 export async function campanhasRoutes(app: FastifyInstance) {
   app.get('/campanhas', { preValidation: [requireAuth] }, async (request, reply) => {
@@ -146,14 +276,35 @@ export async function campanhasRoutes(app: FastifyInstance) {
     return reply.status(204).send()
   })
 
-  // Endpoint chamado pelo cron do Coolify (substitui pg_cron do Supabase)
+  // Disparo manual — autenticado, para testes ou uso pontual
+  app.post('/campanhas/:id/disparar', { preValidation: [requireAuth] }, async (request, reply) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params)
+    const { accountId } = request.user as JwtPayload
+    const campanha = await prisma.campanha.findFirst({ where: { id, accountId } })
+    if (!campanha) return reply.status(404).send({ message: 'Campanha não encontrada.' })
+    const result = await dispararCampanha(id)
+    return reply.send(result)
+  })
+
+  // Cron endpoint — chamado pelo Coolify Scheduler (sem auth de usuário, usa CRON_SECRET)
   app.post('/campanhas/cron/disparar', async (request, reply) => {
     const cronSecret = request.headers['x-cron-secret']
     if (cronSecret !== process.env.CRON_SECRET) {
       return reply.status(401).send({ message: 'Não autorizado.' })
     }
 
-    // TODO: migrar lógica de disparo da Edge Function `disparar-mensagens`
-    return reply.send({ message: 'Disparo em processamento.' })
+    // Dispara todas as campanhas ativas
+    const campanhas = await prisma.campanha.findMany({ where: { ativo: true } })
+    const resultados = await Promise.allSettled(campanhas.map(c => dispararCampanha(c.id)))
+
+    const totais = resultados.reduce((acc, r) => {
+      if (r.status === 'fulfilled') {
+        acc.enviados += r.value.enviados
+        acc.erros += r.value.erros
+      }
+      return acc
+    }, { enviados: 0, erros: 0 })
+
+    return reply.send({ campanhasProcessadas: campanhas.length, ...totais })
   })
 }
