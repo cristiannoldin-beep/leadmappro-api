@@ -87,7 +87,7 @@ export async function prospeccaoRoutes(app: FastifyInstance) {
       return reply.status(502).send({ message: 'Erro na API do Google Maps.', detalhes: err })
     }
 
-    const placesData: PlacesResponse = await placesRes.json()
+    const placesData = await placesRes.json() as PlacesResponse
     const places = placesData.places ?? []
     const newNextPageToken = placesData.nextPageToken ?? null
 
