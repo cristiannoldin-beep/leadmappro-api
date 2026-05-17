@@ -2,6 +2,30 @@ import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma'
 import { requireAuth, JwtPayload } from '../lib/auth'
+import { decrypt } from '../lib/encryption'
+
+async function sendViaWaha(accountId: string, telefone: string, mensagem: string, conexaoId?: string): Promise<boolean> {
+  const conexao = conexaoId
+    ? await prisma.whatsappConexao.findFirst({ where: { id: conexaoId, accountId } })
+    : await prisma.whatsappConexao.findFirst({ where: { accountId, status: 'connected' }, orderBy: { createdAt: 'asc' } })
+
+  if (!conexao?.instanceKey) return false
+
+  const cred = await prisma.credencial.findUnique({ where: { accountId_chave: { accountId, chave: 'UAZAPI_BASE_URL' } } })
+  const baseUrl = cred?.ativa ? decrypt(cred.valorCriptografado) : 'https://api.uazapi.com'
+
+  const numero = telefone.replace(/\D/g, '')
+  const phone = numero.startsWith('55') ? numero : `55${numero}`
+
+  try {
+    const res = await fetch(`${baseUrl}/v1/messages/text`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'instance-key': conexao.instanceKey },
+      body: JSON.stringify({ phone, body: mensagem }),
+    })
+    return res.ok
+  } catch { return false }
+}
 
 export async function chatsRoutes(app: FastifyInstance) {
   app.get('/chats/conversas', { preValidation: [requireAuth] }, async (request, reply) => {
@@ -57,6 +81,9 @@ export async function chatsRoutes(app: FastifyInstance) {
       mediaType: z.string().optional(),
     }).parse(request.body)
 
+    const contato = await prisma.contato.findUnique({ where: { id: body.contatoId } })
+    if (!contato) return reply.status(404).send({ message: 'Contato não encontrado.' })
+
     const mensagem = await prisma.interacao.create({
       data: {
         contatoId: body.contatoId,
@@ -69,7 +96,11 @@ export async function chatsRoutes(app: FastifyInstance) {
       },
     })
 
-    // TODO: enviar mensagem via provider WhatsApp
+    // Enviar via WhatsApp (não bloqueia a resposta se falhar)
+    if (contato.telefone) {
+      sendViaWaha(accountId, contato.telefone, body.conteudo, body.conexaoId).catch(() => {})
+    }
+
     return reply.status(201).send({ mensagem })
   })
 
