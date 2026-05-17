@@ -172,6 +172,7 @@ model Contato {
   ganchoPersonalizacao String?
   provaSocial          String?
   origemCasaDados      String?
+  website              String?
   updatedAt     DateTime @updatedAt
   createdAt     DateTime @default(now())
 
