@@ -10,7 +10,7 @@ export async function authRoutes(app: FastifyInstance) {
       email: z.string().email(),
       password: z.string().min(6),
       nomeCompleto: z.string().min(2),
-      celular: z.string().optional().transform(v => v?.trim() || undefined),
+      celular: z.string().min(10, 'Informe seu WhatsApp').transform(v => v.trim()),
     }).parse(request.body)
 
     const existing = await prisma.profile.findUnique({ where: { email: body.email } })
