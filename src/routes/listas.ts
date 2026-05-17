@@ -51,6 +51,39 @@ export async function listasRoutes(app: FastifyInstance) {
     return reply.status(204).send()
   })
 
+  app.get('/listas/:id/contatos', { preValidation: [requireAuth] }, async (request, reply) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params)
+    const { accountId } = request.user as JwtPayload
+    const { page = '1', limit = '50' } = request.query as Record<string, string>
+
+    const lista = await prisma.lista.findFirst({ where: { id, accountId } })
+    if (!lista) return reply.status(404).send({ message: 'Lista não encontrada.' })
+
+    const skip = (Number(page) - 1) * Number(limit)
+    const [listaContatos, total] = await Promise.all([
+      prisma.listaContato.findMany({
+        where: { listaId: id },
+        include: { contato: true },
+        skip,
+        take: Number(limit),
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.listaContato.count({ where: { listaId: id } }),
+    ])
+
+    const contatos = listaContatos.map((lc) => ({
+      id: lc.id,
+      nome_empresa: lc.contato.nomeEmpresa,
+      telefone: lc.contato.telefone,
+      cidade: lc.contato.cidade,
+      estado: lc.contato.estado,
+      status_whatsapp: lc.statusWhatsapp,
+      status: lc.statusNaLista,
+    }))
+
+    return reply.send({ contatos, total, page: Number(page), limit: Number(limit) })
+  })
+
   app.get('/listas/:id/exportar', { preValidation: [requireAuth] }, async (request, reply) => {
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params)
     const { accountId } = request.user as JwtPayload
