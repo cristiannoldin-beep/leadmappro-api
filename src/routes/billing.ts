@@ -24,10 +24,21 @@ export async function billingRoutes(app: FastifyInstance) {
   app.get('/billing/planos', async (_request, reply) => {
     const planos = await prisma.plan.findMany({ orderBy: { price: 'asc' } })
     return reply.send({
-      planos: planos.map(p => ({
-        ...p,
-        price: Number(p.price),
-      })),
+      planos: planos.map(p => ({ ...p, price: Number(p.price) })),
+    })
+  })
+
+  app.get('/billing/plano', { preValidation: [requireAuth] }, async (request, reply) => {
+    const { accountId } = request.user as JwtPayload
+    const account = await prisma.account.findUnique({
+      where: { id: accountId },
+      include: { plan: true },
+    })
+    return reply.send({
+      plano: account?.plan
+        ? { ...account.plan, price: Number(account.plan.price) }
+        : null,
+      status: account?.status ?? 'active',
     })
   })
 
