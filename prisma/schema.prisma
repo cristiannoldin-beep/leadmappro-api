@@ -146,6 +146,7 @@ model Lista {
   googleNextPageToken   String?
   googlePlaceIds        String[]  @default([])
   googleVariacoesIa     String[]  @default([])
+  googleQueriesUsadas   String[]  @default([])
   dataCriacao           DateTime  @default(now())
 
   parceiro      Parceiro?      @relation(fields: [parceiroId], references: [id], onDelete: SetNull)
