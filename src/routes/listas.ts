@@ -56,7 +56,7 @@ export async function listasRoutes(app: FastifyInstance) {
   app.get('/listas/:id/contatos', { preValidation: [requireAuth] }, async (request, reply) => {
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params)
     const { accountId } = request.user as JwtPayload
-    const { page = '1', limit = '50' } = request.query as Record<string, string>
+    const { page = '1', limit = '500' } = request.query as Record<string, string>
 
     const lista = await prisma.lista.findFirst({ where: { id, accountId } })
     if (!lista) return reply.status(404).send({ message: 'Lista não encontrada.' })
@@ -73,18 +73,77 @@ export async function listasRoutes(app: FastifyInstance) {
       prisma.listaContato.count({ where: { listaId: id } }),
     ])
 
+    // Bulk-compute outras_listas por contato
+    const contatoIds = listaContatos.map((lc) => lc.contatoId)
+    const outrasRaw = await prisma.listaContato.findMany({
+      where: { contatoId: { in: contatoIds }, listaId: { not: id } },
+      select: { contatoId: true, listaId: true },
+    })
+    const outrasMap = new Map<string, string[]>()
+    for (const row of outrasRaw) {
+      const arr = outrasMap.get(row.contatoId) ?? []
+      arr.push(row.listaId)
+      outrasMap.set(row.contatoId, arr)
+    }
+
     const contatos = listaContatos.map((lc) => ({
       id: lc.id,
-      nome_empresa: lc.contato.nomeEmpresa,
-      telefone: lc.contato.telefone,
-      cidade: lc.contato.cidade,
-      estado: lc.contato.estado,
-      website: lc.contato.website,
+      lista_id: lc.listaId,
+      contato_id: lc.contatoId,
       status_whatsapp: lc.statusWhatsapp,
-      status: lc.statusNaLista,
+      mensagem_enviada: lc.mensagemEnviada,
+      fonte_busca: lc.fonteBusca,
+      created_at: lc.createdAt,
+      contatos: {
+        id: lc.contato.id,
+        nome_empresa: lc.contato.nomeEmpresa,
+        contato_nome: lc.contato.contatoNome,
+        telefone: lc.contato.telefone,
+        cidade: lc.contato.cidade,
+        estado: lc.contato.estado,
+        cnpj: lc.contato.cnpj,
+        website: lc.contato.website,
+        gancho_personalizacao: lc.contato.ganchoPersonalizacao,
+        prova_social: lc.contato.provaSocial,
+      },
+      outras_listas: outrasMap.get(lc.contatoId) ?? [],
     }))
 
-    return reply.send({ contatos, total, page: Number(page), limit: Number(limit) })
+    const hasMore = skip + listaContatos.length < total
+    return reply.send({ contatos, total, page: Number(page), limit: Number(limit), hasMore })
+  })
+
+  app.patch('/listas/:id', { preValidation: [requireAuth] }, async (request, reply) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params)
+    const { accountId } = request.user as JwtPayload
+    const body = z.object({
+      googleQueriesUsadas: z.array(z.string()).optional(),
+      googleVariacoesIa: z.array(z.string()).optional(),
+      nome: z.string().optional(),
+      segmento: z.string().optional(),
+      cidade: z.string().optional(),
+      estado: z.string().optional(),
+    }).parse(request.body)
+
+    const lista = await prisma.lista.findFirst({ where: { id, accountId } })
+    if (!lista) return reply.status(404).send({ message: 'Lista não encontrada.' })
+
+    const updated = await prisma.lista.update({ where: { id }, data: body })
+    return reply.send({ lista: updated })
+  })
+
+  app.post('/listas/:id/resetar-erros', { preValidation: [requireAuth] }, async (request, reply) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params)
+    const { accountId } = request.user as JwtPayload
+
+    const lista = await prisma.lista.findFirst({ where: { id, accountId } })
+    if (!lista) return reply.status(404).send({ message: 'Lista não encontrada.' })
+
+    const { count } = await prisma.listaContato.updateMany({
+      where: { listaId: id, statusWhatsapp: 'erro' },
+      data: { statusWhatsapp: 'nao_validado' },
+    })
+    return reply.send({ resetados: count })
   })
 
   app.get('/listas/:id/exportar', { preValidation: [requireAuth] }, async (request, reply) => {

@@ -11,16 +11,17 @@ async function sendViaWaha(accountId: string, telefone: string, mensagem: string
 
   if (!conexao?.instanceKey) return false
 
+  const globalUrl = await prisma.configuracaoIntegracao.findUnique({ where: { chave: 'UAZAPI_BASE_URL' } })
   const cred = await prisma.credencial.findUnique({ where: { accountId_chave: { accountId, chave: 'UAZAPI_BASE_URL' } } })
-  const baseUrl = cred?.ativa ? decrypt(cred.valorCriptografado) : 'https://api.uazapi.com'
+  const baseUrl = globalUrl?.valor ?? (cred?.ativa ? decrypt(cred.valorCriptografado) : 'https://api.uazapi.com')
 
   const numero = telefone.replace(/\D/g, '')
   const phone = numero.startsWith('55') ? numero : `55${numero}`
 
   try {
-    const res = await fetch(`${baseUrl}/v1/messages/text`, {
+    const res = await fetch(`${baseUrl}/message/sendText`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'instance-key': conexao.instanceKey },
+      headers: { 'Content-Type': 'application/json', token: conexao.instanceKey },
       body: JSON.stringify({ phone, body: mensagem }),
     })
     return res.ok
@@ -125,7 +126,21 @@ export async function chatsRoutes(app: FastifyInstance) {
   app.post('/chats/sugerir-respostas', { preValidation: [requireAuth] }, async (request, reply) => {
     const body = z.object({ contatoId: z.string().uuid(), ultimasMensagens: z.array(z.string()).optional() }).parse(request.body)
     // TODO: chamar OpenAI para sugestões
-    return reply.send({ sugestoes: [], message: 'TODO: sugestões com IA' })
+    return reply.send({ suggestions: [], message: 'TODO: sugestões com IA' })
+  })
+
+  // Reactions em mensagens
+  app.post('/chats/mensagens/:id/reactions', { preValidation: [requireAuth] }, async (request, reply) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params)
+    const { sub } = request.user as JwtPayload
+    const body = z.object({ emoji: z.string().min(1) }).parse(request.body)
+
+    const mensagem = await prisma.interacao.findUnique({ where: { id } })
+    if (!mensagem) return reply.status(404).send({ message: 'Mensagem não encontrada.' })
+
+    await prisma.interacaoReaction.deleteMany({ where: { interacaoId: id, userId: sub } })
+    await prisma.interacaoReaction.create({ data: { interacaoId: id, userId: sub, emoji: body.emoji } })
+    return reply.status(201).send({ ok: true })
   })
 
   // Substitui: analisar-sentimento-conversa
