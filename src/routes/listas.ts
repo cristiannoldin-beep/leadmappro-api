@@ -6,11 +6,12 @@ import { requireAuth, JwtPayload } from '../lib/auth'
 export async function listasRoutes(app: FastifyInstance) {
   app.get('/listas', { preValidation: [requireAuth] }, async (request, reply) => {
     const { accountId } = request.user as JwtPayload
-    const listas = await prisma.lista.findMany({
+    const raw = await prisma.lista.findMany({
       where: { accountId },
       orderBy: { dataCriacao: 'desc' },
       include: { _count: { select: { listaContatos: true } } },
     })
+    const listas = raw.map((l) => ({ ...l, createdAt: l.dataCriacao, totalContatos: l._count.listaContatos }))
     return reply.send({ listas })
   })
 
@@ -34,11 +35,12 @@ export async function listasRoutes(app: FastifyInstance) {
   app.get('/listas/:id', { preValidation: [requireAuth] }, async (request, reply) => {
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params)
     const { accountId } = request.user as JwtPayload
-    const lista = await prisma.lista.findFirst({
+    const raw = await prisma.lista.findFirst({
       where: { id, accountId },
       include: { _count: { select: { listaContatos: true } } },
     })
-    if (!lista) return reply.status(404).send({ message: 'Lista não encontrada.' })
+    if (!raw) return reply.status(404).send({ message: 'Lista não encontrada.' })
+    const lista = { ...raw, createdAt: raw.dataCriacao, totalContatos: raw._count.listaContatos }
     return reply.send({ lista })
   })
 
