@@ -77,6 +77,7 @@ export async function listasRoutes(app: FastifyInstance) {
       telefone: lc.contato.telefone,
       cidade: lc.contato.cidade,
       estado: lc.contato.estado,
+      website: lc.contato.website,
       status_whatsapp: lc.statusWhatsapp,
       status: lc.statusNaLista,
     }))

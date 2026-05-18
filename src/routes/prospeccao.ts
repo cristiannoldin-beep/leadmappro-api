@@ -201,7 +201,12 @@ Regras:
         }),
       })
 
-      if (!placesRes.ok) break
+      if (!placesRes.ok) {
+        const errBody = await placesRes.text().catch(() => '')
+        return reply.status(502).send({
+          message: `Google Places API erro ${placesRes.status}. Verifique se "Places API (New)" está ativada no Google Cloud Console e se a chave tem faturamento habilitado. Detalhe: ${errBody.slice(0, 200)}`,
+        })
+      }
 
       const placesData = await placesRes.json() as PlacesResponse
       const places = placesData.places ?? []
