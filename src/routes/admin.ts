@@ -205,10 +205,14 @@ export async function adminRoutes(app: FastifyInstance) {
 
     try {
       if (tipo === 'google_maps') {
-        const res = await fetch(`https://maps.googleapis.com/maps/api/place/textsearch/json?query=restaurante&key=${key}`)
-        const data = await res.json() as { status: string; error_message?: string }
-        sucesso = data.status === 'OK' || data.status === 'ZERO_RESULTS'
-        mensagem = sucesso ? 'Google Maps API funcionando corretamente!' : `Erro: ${data.status}${data.error_message ? ' — ' + data.error_message : ''}`
+        const res = await fetch('https://places.googleapis.com/v1/places:searchText', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': key, 'X-Goog-FieldMask': 'places.displayName' },
+          body: JSON.stringify({ textQuery: 'restaurante', languageCode: 'pt-BR', maxResultCount: 1 }),
+        })
+        const data = await res.json() as { places?: unknown[]; error?: { message: string } }
+        sucesso = res.ok
+        mensagem = sucesso ? 'Google Maps API funcionando corretamente!' : `Erro: ${data.error?.message ?? 'Chave inválida'}`
       } else {
         const res = await fetch('https://api.openai.com/v1/models', {
           headers: { Authorization: `Bearer ${key}` },

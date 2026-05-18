@@ -45,11 +45,16 @@ function extractCidadeEstado(components: PlaceResult['addressComponents']) {
 }
 
 async function getCredencial(accountId: string, chave: string): Promise<string | null> {
+  // 1. Per-account credential (encrypted)
   const cred = await prisma.credencial.findUnique({
     where: { accountId_chave: { accountId, chave } },
   })
-  if (!cred?.ativa) return null
-  return decrypt(cred.valorCriptografado)
+  if (cred?.ativa) {
+    try { return decrypt(cred.valorCriptografado) } catch { /* fall through to global */ }
+  }
+  // 2. Global admin config (plain text fallback)
+  const global = await prisma.configuracaoIntegracao.findUnique({ where: { chave } })
+  return global?.valor ?? null
 }
 
 // ── WAHA / UazAPI helper ─────────────────────────────────────────────────────
