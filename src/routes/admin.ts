@@ -3,34 +3,8 @@ import { z } from 'zod'
 import bcrypt from 'bcryptjs'
 import { requireAdmin } from '../lib/auth'
 import { prisma } from '../lib/prisma'
-import { encrypt } from '../lib/encryption'
 
 export async function adminRoutes(app: FastifyInstance) {
-  // ── Seed credentials (temp, remove after use) ────────────────────────────
-  app.post('/admin/seed-credenciais', async (request, reply) => {
-    const token = (request.headers.authorization ?? '').replace('Bearer ', '')
-    if (token !== 'seed-lmp-2026-once') return reply.status(401).send({ message: 'Unauthorized' })
-    const body = z.object({
-      credenciais: z.array(z.object({ chave: z.string(), valor: z.string() })),
-    }).parse(request.body)
-    const accounts = await prisma.account.findMany({ select: { id: true, name: true } })
-    const results: Record<string, string[]> = {}
-    for (const acc of accounts) {
-      results[acc.name] = []
-      for (const cred of body.credenciais) {
-        const valorCriptografado = encrypt(cred.valor)
-        await prisma.credencial.upsert({
-          where: { accountId_chave: { accountId: acc.id, chave: cred.chave } },
-          update: { valorCriptografado, ativa: true, atualizadoEm: new Date() },
-          create: { accountId: acc.id, chave: cred.chave, valorCriptografado, ativa: true },
-        })
-        results[acc.name].push(cred.chave)
-      }
-    }
-    return reply.send({ ok: true, results })
-  })
-
-
   // ── Accounts list (enriched) ──────────────────────────────────────────────
   app.get('/admin/accounts', { preValidation: [requireAdmin] }, async (request, reply) => {
     const query = z.object({ page: z.coerce.number().default(1), limit: z.coerce.number().default(50) }).parse(request.query)
