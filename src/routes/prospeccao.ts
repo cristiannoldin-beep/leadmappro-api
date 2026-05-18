@@ -77,14 +77,14 @@ async function getWahaConnection(accountId: string): Promise<WahaConnection | nu
 
 async function checkPhone(waha: WahaConnection, phone: string): Promise<boolean | null> {
   try {
-    const res = await fetch(`${waha.baseUrl}/v1/chat/presence`, {
+    const res = await fetch(`${waha.baseUrl}/chat/check`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'instance-key': waha.instanceKey },
+      headers: { 'Content-Type': 'application/json', token: waha.instanceKey },
       body: JSON.stringify({ phone }),
     })
     if (!res.ok) return null
-    const data = await res.json() as { exists?: boolean }
-    return data.exists ?? null
+    const data = await res.json() as { exists?: boolean; hasWhatsapp?: boolean }
+    return data.exists ?? data.hasWhatsapp ?? null
   } catch { return null }
 }
 
