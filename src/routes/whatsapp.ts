@@ -42,11 +42,11 @@ async function uazapiRequest(baseUrl: string, instanceToken: string, method: str
   return res.json()
 }
 
-// Operação admin: usa header 'apikey'
+// Operação admin: envia tanto 'token' quanto 'apikey' para compatibilidade com SaaS e self-hosted
 async function uazapiAdminRequest(baseUrl: string, adminKey: string, method: string, path: string, body?: unknown) {
   const res = await fetch(`${baseUrl}${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json', apikey: adminKey },
+    headers: { 'Content-Type': 'application/json', token: adminKey, apikey: adminKey },
     ...(body ? { body: JSON.stringify(body) } : {}),
   })
   if (!res.ok) {
@@ -82,34 +82,43 @@ export async function whatsappRoutes(app: FastifyInstance) {
       return reply.send({ ok: false, erro: 'UAZAPI_GLOBAL_KEY não configurada no painel admin.', baseUrl })
     }
 
-    const candidates = [
-      // UazAPI v2
-      '/instance/list',
-      '/instance/fetchInstances',
-      // UazAPI v1 / Evolution API v1
-      '/v1/instance/list',
-      '/v1/instance/fetchInstances',
-      // WAHA
-      '/api/sessions',
-      // Root (para identificar o servidor)
-      '/',
-    ]
-
     const resultados: Record<string, unknown> = {}
-    for (const path of candidates) {
+
+    // Testa POST /instance/create com body mínimo — 200/201 = chave válida
+    try {
+      const createRes = await fetch(`${baseUrl}/instance/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', token: globalKey, apikey: globalKey },
+        body: JSON.stringify({ instanceName: '__diag_test__' }),
+        signal: AbortSignal.timeout(8000),
+      })
+      const createTxt = await createRes.text()
+      resultados['POST /instance/create'] = { status: createRes.status, body: createTxt.slice(0, 300) }
+      if (createRes.ok) {
+        // Deleta a instância de teste imediatamente
+        await fetch(`${baseUrl}/instance/delete`, {
+          method: 'DELETE',
+          headers: { token: globalKey, apikey: globalKey },
+          body: JSON.stringify({ instanceName: '__diag_test__' }),
+          signal: AbortSignal.timeout(5000),
+        }).catch(() => null)
+        return reply.send({ ok: true, endpointFuncionando: 'POST /instance/create', status: createRes.status, baseUrl, resultados })
+      }
+    } catch (err) {
+      resultados['POST /instance/create'] = { erro: err instanceof Error ? err.message : String(err) }
+    }
+
+    // Testa GET /instance/list (pode retornar lista vazia mas com 200)
+    for (const path of ['/instance/list', '/v1/instance/list', '/instances', '/']) {
       try {
         const res = await fetch(`${baseUrl}${path}`, {
-          method: 'GET',
-          headers: { apikey: globalKey, Authorization: `Bearer ${globalKey}` },
+          headers: { token: globalKey, apikey: globalKey },
           signal: AbortSignal.timeout(5000),
         })
         const txt = await res.text()
-        resultados[path] = { status: res.status, ok: res.ok, body: txt.slice(0, 300) }
-        if (res.ok) {
-          return reply.send({ ok: true, endpointFuncionando: path, status: res.status, baseUrl, resultados })
-        }
+        resultados[`GET ${path}`] = { status: res.status, body: txt.slice(0, 200) }
       } catch (err) {
-        resultados[path] = { erro: err instanceof Error ? err.message : String(err) }
+        resultados[`GET ${path}`] = { erro: err instanceof Error ? err.message : String(err) }
       }
     }
 
