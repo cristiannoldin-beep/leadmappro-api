@@ -103,41 +103,180 @@ export async function webhooksRoutes(app: FastifyInstance) {
     return reply.status(200).send({ received: true })
   })
 
-  // Substitui: evolution-webhook
-  app.post('/webhooks/evolution', async (request, reply) => {
-    // TODO: migrar lógica de evolution-webhook
+  // Evolution está substituído por UazAPI — mantém rota para retrocompatibilidade
+  app.post('/webhooks/evolution', async (_request, reply) => {
     return reply.status(200).send({ received: true })
   })
 
-  // Substitui: meta-webhook
+  // ── Meta Webhook ───────────────────────────────────────────────────────────
   app.get('/webhooks/meta', async (request, reply) => {
     const query = request.query as Record<string, string>
     const mode = query['hub.mode']
     const token = query['hub.verify_token']
     const challenge = query['hub.challenge']
 
-    if (mode === 'subscribe' && token === process.env.META_WEBHOOK_VERIFY_TOKEN) {
+    if (mode === 'subscribe' && token === (process.env.META_WEBHOOK_VERIFY_TOKEN ?? 'leadmappro_webhook_secret_2026')) {
       return reply.status(200).send(challenge)
     }
     return reply.status(403).send({ message: 'Verificação falhou.' })
   })
 
   app.post('/webhooks/meta', async (request, reply) => {
-    // TODO: migrar lógica de meta-webhook
-    return reply.status(200).send({ received: true })
+    try {
+      const payload = request.body as {
+        object?: string
+        entry?: Array<{
+          changes?: Array<{
+            value?: {
+              messages?: Array<{
+                from?: string
+                text?: { body?: string }
+                type?: string
+                id?: string
+                timestamp?: string
+              }>
+              metadata?: { phone_number_id?: string }
+            }
+          }>
+        }>
+      }
+
+      if (payload.object !== 'whatsapp_business_account') {
+        return reply.status(200).send('EVENT_RECEIVED')
+      }
+
+      for (const entry of payload.entry ?? []) {
+        for (const change of entry.changes ?? []) {
+          const value = change.value
+          for (const msg of value?.messages ?? []) {
+            if (msg.type !== 'text' || !msg.text?.body || !msg.from) continue
+
+            const phoneNumberId = value?.metadata?.phone_number_id
+            const conexao = phoneNumberId
+              ? await prisma.whatsappConexao.findFirst({ where: { instanceName: phoneNumberId } })
+              : null
+            if (!conexao) continue
+
+            const telefone = msg.from.startsWith('55') ? msg.from : `55${msg.from}`
+            let contato = await prisma.contato.findFirst({ where: { telefone: { in: [msg.from, telefone] } } })
+            if (!contato) {
+              contato = await prisma.contato.create({
+                data: { nomeEmpresa: telefone, telefone },
+              })
+            }
+
+            const msgDate = msg.timestamp ? new Date(Number(msg.timestamp) * 1000) : new Date()
+            if (msg.id) {
+              const exists = await prisma.interacao.findFirst({ where: { externalId: msg.id } })
+              if (exists) continue
+            }
+            await prisma.interacao.create({
+              data: {
+                contatoId: contato.id,
+                accountId: conexao.accountId,
+                direcao: 'recebido',
+                canal: 'whatsapp',
+                conteudo: msg.text.body,
+                data: msgDate,
+                externalId: msg.id,
+              },
+            })
+          }
+        }
+      }
+    } catch { /* não bloquear a resposta 200 */ }
+
+    return reply.status(200).send('EVENT_RECEIVED')
   })
 
-  // Substitui: stripe-webhook
-  app.post('/webhooks/stripe', async (request, reply) => {
+  // ── Stripe Webhook ─────────────────────────────────────────────────────────
+  app.post('/webhooks/stripe', { config: { rawBody: true } }, async (request, reply) => {
     const sig = request.headers['stripe-signature'] as string
-    if (!sig) return reply.status(400).send({ message: 'Assinatura ausente.' })
-    // TODO: migrar lógica de stripe-webhook com Stripe SDK
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET
+    const stripeKey = process.env.STRIPE_SECRET_KEY
+
+    if (!stripeKey) return reply.status(200).send({ received: true })
+
+    let event: { type: string; data: { object: Record<string, unknown> } }
+    const rawBody = (request as unknown as { rawBody?: Buffer }).rawBody?.toString() ?? JSON.stringify(request.body)
+
+    if (webhookSecret && sig) {
+      // Verificação manual da assinatura HMAC-SHA256
+      const crypto = await import('crypto')
+      const parts = sig.split(',').reduce<Record<string, string>>((acc, p) => {
+        const [k, v] = p.split('=')
+        acc[k] = v
+        return acc
+      }, {})
+      const timestamp = parts['t']
+      const expectedSig = crypto.createHmac('sha256', webhookSecret).update(`${timestamp}.${rawBody}`).digest('hex')
+      if (`v1=${expectedSig}` !== parts['v1']) {
+        return reply.status(400).send({ message: 'Assinatura inválida.' })
+      }
+    }
+
+    try { event = JSON.parse(rawBody) } catch {
+      return reply.status(400).send({ message: 'Payload inválido.' })
+    }
+
+    const obj = event.data.object
+
+    if (event.type === 'checkout.session.completed') {
+      const accountId = (obj.metadata as Record<string, string> | undefined)?.account_id
+      const planId = (obj.metadata as Record<string, string> | undefined)?.plan_id
+      if (accountId) {
+        await prisma.account.update({ where: { id: accountId }, data: { status: 'active', ...(planId ? { planId } : {}) } }).catch(() => null)
+      }
+    }
+
+    if (event.type === 'invoice.payment_failed') {
+      const accountId = (obj.metadata as Record<string, string> | undefined)?.account_id
+      if (accountId) {
+        await prisma.account.update({ where: { id: accountId }, data: { status: 'past_due' } }).catch(() => null)
+      }
+    }
+
+    if (event.type === 'customer.subscription.deleted') {
+      const accountId = (obj.metadata as Record<string, string> | undefined)?.account_id
+      if (accountId) {
+        await prisma.account.update({ where: { id: accountId }, data: { status: 'suspended' } }).catch(() => null)
+      }
+    }
+
     return reply.status(200).send({ received: true })
   })
 
-  // Substitui: asaas-webhook
+  // ── Asaas Webhook ──────────────────────────────────────────────────────────
   app.post('/webhooks/asaas', async (request, reply) => {
-    // TODO: migrar lógica de asaas-webhook
+    const webhookToken = process.env.ASAAS_WEBHOOK_TOKEN
+    if (webhookToken) {
+      const requestToken = request.headers['asaas-access-token'] as string | undefined
+      if (requestToken !== webhookToken) return reply.status(401).send({ message: 'Token inválido.' })
+    }
+
+    const body = request.body as { event?: string; payment?: { externalReference?: string; status?: string } }
+    const event = body.event ?? ''
+    const externalRef = body.payment?.externalReference ?? ''
+
+    if (!externalRef) return reply.status(200).send({ received: true })
+
+    const statusMap: Record<string, string> = {
+      PAYMENT_CONFIRMED: 'active',
+      PAYMENT_RECEIVED: 'active',
+      PAYMENT_OVERDUE: 'past_due',
+      PAYMENT_DELETED: 'suspended',
+      PAYMENT_REFUNDED: 'suspended',
+      SUBSCRIPTION_DELETED: 'suspended',
+    }
+
+    const newStatus = statusMap[event]
+    if (newStatus) {
+      const [accountId] = externalRef.split('|')
+      if (accountId) {
+        await prisma.account.update({ where: { id: accountId }, data: { status: newStatus } }).catch(() => null)
+      }
+    }
+
     return reply.status(200).send({ received: true })
   })
 }

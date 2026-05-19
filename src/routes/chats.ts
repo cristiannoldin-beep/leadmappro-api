@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { prisma } from '../lib/prisma'
 import { requireAuth, JwtPayload } from '../lib/auth'
 import { decrypt } from '../lib/encryption'
+import { getCredencial, getUazapiConnection } from '../lib/credencial'
 
 async function sendViaWaha(accountId: string, telefone: string, mensagem: string, conexaoId?: string): Promise<boolean> {
   const conexao = conexaoId
@@ -26,6 +27,30 @@ async function sendViaWaha(accountId: string, telefone: string, mensagem: string
     })
     return res.ok
   } catch { return false }
+}
+
+function fallbackSuggestions(name: string, lastMsg: string) {
+  const lc = lastMsg.toLowerCase()
+  if (/pre[çc]o|valor|custo|quanto/.test(lc)) return [
+    { text: `${name}, posso enviar mais detalhes sobre os valores. Qual o melhor horário para conversarmos?`, tone: 'formal' },
+    { text: `Oi ${name}! 😊 Vou te passar os valores agora, pode me dar um minutinho?`, tone: 'amigavel' },
+    { text: `Vou te enviar a tabela de preços. Prefere WhatsApp ou e-mail?`, tone: 'direto' },
+  ]
+  if (/agendar|hor[aá]rio|dispon[ií]vel|agenda/.test(lc)) return [
+    { text: `${name}, tenho disponibilidade amanhã às 14h ou 16h. Qual prefere?`, tone: 'formal' },
+    { text: `Show! 📅 Amanhã de tarde fica bem? 14h ou 16h?`, tone: 'amigavel' },
+    { text: `Amanhã 14h ou 16h. Qual prefere?`, tone: 'direto' },
+  ]
+  if (/obrigado|agrade[çc]o|valeu/.test(lc)) return [
+    { text: `Por nada, ${name}! Estamos à disposição.`, tone: 'formal' },
+    { text: `Imagina! 😊 Qualquer coisa é só chamar.`, tone: 'amigavel' },
+    { text: `Disponha! Qualquer dúvida é só falar.`, tone: 'direto' },
+  ]
+  return [
+    { text: `${name}, como posso ajudá-lo com isso?`, tone: 'formal' },
+    { text: `Oi ${name}! 😊 Me conta mais que te ajudo!`, tone: 'amigavel' },
+    { text: `Entendido. O que precisa exatamente?`, tone: 'direto' },
+  ]
 }
 
 export async function chatsRoutes(app: FastifyInstance) {
@@ -124,9 +149,55 @@ export async function chatsRoutes(app: FastifyInstance) {
 
   // Substitui: sugerir-respostas-chat
   app.post('/chats/sugerir-respostas', { preValidation: [requireAuth] }, async (request, reply) => {
+    const { accountId } = request.user as JwtPayload
     const body = z.object({ contatoId: z.string().uuid(), ultimasMensagens: z.array(z.string()).optional() }).parse(request.body)
-    // TODO: chamar OpenAI para sugestões
-    return reply.send({ suggestions: [], message: 'TODO: sugestões com IA' })
+
+    const contato = await prisma.contato.findUnique({ where: { id: body.contatoId } })
+    const contactName = contato?.contatoNome ?? contato?.nomeEmpresa ?? 'Cliente'
+
+    // Buscar últimas 10 mensagens para contexto
+    const mensagens = body.ultimasMensagens ?? (
+      await prisma.interacao.findMany({
+        where: { contatoId: body.contatoId, accountId },
+        orderBy: { data: 'desc' },
+        take: 10,
+      })
+    ).reverse().map((m) => `${m.direcao === 'enviado' ? 'Você' : contactName}: ${m.conteudo}`)
+
+    const lastMsg = typeof mensagens[mensagens.length - 1] === 'string'
+      ? mensagens[mensagens.length - 1] as string
+      : ''
+
+    const openaiKey = await getCredencial(accountId, 'OPENAI_API_KEY')
+    if (!openaiKey) {
+      return reply.send({ suggestions: fallbackSuggestions(contactName, lastMsg) })
+    }
+
+    const prompt = `Você é um assistente de vendas B2B via WhatsApp.
+Com base no histórico abaixo, gere EXATAMENTE 3 sugestões de resposta: uma formal, uma amigável e uma direta.
+
+Histórico:
+${mensagens.slice(-6).join('\n')}
+
+Responda APENAS em JSON válido (sem markdown):
+[{"text":"...","tone":"formal"},{"text":"...","tone":"amigavel"},{"text":"...","tone":"direto"}]`
+
+    try {
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${openaiKey}` },
+        body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: prompt }], temperature: 0.7, max_tokens: 400, response_format: { type: 'json_object' } }),
+      })
+      if (res.ok) {
+        const data = await res.json() as { choices?: { message?: { content?: string } }[] }
+        const content = data.choices?.[0]?.message?.content ?? '[]'
+        const parsed = JSON.parse(content)
+        const suggestions = Array.isArray(parsed) ? parsed : parsed.suggestions ?? parsed.respostas ?? []
+        if (suggestions.length > 0) return reply.send({ suggestions })
+      }
+    } catch { /* fallback */ }
+
+    return reply.send({ suggestions: fallbackSuggestions(contactName, lastMsg) })
   })
 
   // Reactions em mensagens
@@ -145,32 +216,185 @@ export async function chatsRoutes(app: FastifyInstance) {
 
   // Substitui: analisar-sentimento-conversa
   app.post('/chats/analisar-sentimento', { preValidation: [requireAuth] }, async (request, reply) => {
+    const { accountId } = request.user as JwtPayload
     const body = z.object({ contatoId: z.string().uuid() }).parse(request.body)
-    // TODO: analisar sentimento com IA
-    return reply.send({ sentimento: null, message: 'TODO: análise de sentimento' })
+
+    const mensagens = await prisma.interacao.findMany({
+      where: { contatoId: body.contatoId, accountId },
+      orderBy: { data: 'desc' },
+      take: 20,
+      select: { direcao: true, conteudo: true },
+    })
+    if (mensagens.length === 0) return reply.send({ sentimento: 'neutro', score: 0 })
+
+    const openaiKey = await getCredencial(accountId, 'OPENAI_API_KEY')
+    if (!openaiKey) return reply.send({ sentimento: 'neutro', score: 0 })
+
+    const historico = mensagens.reverse().map((m) => `${m.direcao === 'enviado' ? 'Vendedor' : 'Cliente'}: ${m.conteudo}`).join('\n')
+
+    const prompt = `Analise o sentimento desta conversa de vendas e retorne JSON:
+{"sentimento":"positivo"|"neutro"|"negativo","score":-1 a 1,"resumo":"1 frase"}
+
+Conversa:
+${historico}`
+
+    try {
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${openaiKey}` },
+        body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: prompt }], temperature: 0.3, max_tokens: 150, response_format: { type: 'json_object' } }),
+      })
+      if (res.ok) {
+        const data = await res.json() as { choices?: { message?: { content?: string } }[] }
+        const parsed = JSON.parse(data.choices?.[0]?.message?.content ?? '{}')
+        return reply.send(parsed)
+      }
+    } catch { /* fallback */ }
+
+    return reply.send({ sentimento: 'neutro', score: 0 })
   })
 
-  // Substitui: sincronizar-chats
+  // Substitui: sincronizar-chats — importa histórico UazAPI para o banco
   app.post('/chats/sincronizar', { preValidation: [requireAuth] }, async (request, reply) => {
-    const body = z.object({ conexaoId: z.string().uuid() }).parse(request.body)
-    // TODO: sincronizar chats via UazAPI
-    return reply.send({ sincronizados: 0, message: 'TODO: sincronização de chats' })
+    const { accountId } = request.user as JwtPayload
+    const body = z.object({ conexaoId: z.string().uuid().optional() }).parse(request.body)
+
+    const waha = await getUazapiConnection(accountId)
+    if (!waha) return reply.status(400).send({ message: 'Nenhuma conexão WhatsApp ativa.' })
+
+    const conexao = body.conexaoId
+      ? await prisma.whatsappConexao.findFirst({ where: { id: body.conexaoId, accountId } })
+      : await prisma.whatsappConexao.findFirst({ where: { accountId, status: 'connected' } })
+    if (!conexao?.instanceKey) return reply.status(400).send({ message: 'Conexão não encontrada.' })
+
+    const headers = { 'Content-Type': 'application/json', token: conexao.instanceKey }
+
+    // 1. Buscar todos os chats individuais
+    const chatRes = await fetch(`${waha.baseUrl}/chat/find`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ sort: '-wa_lastMsgTimestamp', limit: 200, offset: 0, wa_isGroup: false }),
+    })
+    if (!chatRes.ok) return reply.status(502).send({ message: 'Erro ao buscar chats na UazAPI.' })
+
+    const chatData = await chatRes.json() as { chats?: unknown[] } | unknown[]
+    const chats: Record<string, unknown>[] = (Array.isArray(chatData) ? chatData : (chatData as { chats?: unknown[] }).chats ?? []) as Record<string, unknown>[]
+
+    let syncedChats = 0
+    let syncedMessages = 0
+
+    for (const chat of chats) {
+      const chatId = String(chat.wa_chatid ?? chat.wa_fastid ?? '')
+      if (!chatId) continue
+
+      const rawPhone = chatId.replace(/@s\.whatsapp\.net$/, '').replace(/@.*$/, '')
+      if (!rawPhone || rawPhone.length < 8) continue
+
+      const waName = String(chat.wa_contactName ?? chat.wa_name ?? chat.name ?? rawPhone)
+
+      // Upsert contato
+      let contato = await prisma.contato.findFirst({ where: { telefone: { in: [rawPhone, `55${rawPhone}`] } } })
+      if (!contato) {
+        contato = await prisma.contato.create({ data: { nomeEmpresa: waName, contatoNome: waName, telefone: rawPhone } }).catch(() => null as never)
+      } else if (!contato.contatoNome) {
+        await prisma.contato.update({ where: { id: contato.id }, data: { contatoNome: waName } })
+      }
+      if (!contato) continue
+
+      // Buscar mensagens do chat
+      const msgRes = await fetch(`${waha.baseUrl}/message/find`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ chatid: chatId, limit: 50, offset: 0 }),
+      })
+      if (!msgRes.ok) continue
+
+      const msgData = await msgRes.json() as { messages?: unknown[] } | unknown[]
+      const messages: Record<string, unknown>[] = (Array.isArray(msgData) ? msgData : (msgData as { messages?: unknown[] }).messages ?? []) as Record<string, unknown>[]
+
+      for (const msg of messages) {
+        const msgId = String(msg.id ?? msg.messageid ?? msg.messageId ?? '')
+        const fromMe = msg.fromMe === true
+        const timestamp = Number(msg.timestamp ?? msg.messageTimestamp ?? 0)
+        const msgDate = timestamp ? new Date(timestamp * 1000) : new Date()
+
+        const msgContent = msg.message as Record<string, unknown> | undefined
+        let mediaType = 'texto'
+        if (msgContent?.imageMessage) mediaType = 'imagem'
+        else if (msgContent?.audioMessage || msgContent?.pttMessage) mediaType = 'audio'
+        else if (msgContent?.videoMessage) mediaType = 'video'
+        else if (msgContent?.documentMessage) mediaType = 'documento'
+        else if (msgContent?.stickerMessage) mediaType = 'sticker'
+        else if (msgContent?.locationMessage) mediaType = 'localizacao'
+
+        const texto = String(
+          msg.text ?? msg.content ??
+          (msgContent?.conversation) ??
+          (msgContent?.extendedTextMessage as Record<string, unknown> | undefined)?.text ??
+          `[${mediaType}]`
+        )
+
+        // Evitar duplicatas
+        if (msgId) {
+          const exists = await prisma.interacao.findFirst({ where: { externalId: msgId } })
+          if (exists) continue
+        }
+
+        await prisma.interacao.create({
+          data: {
+            contatoId: contato.id,
+            accountId,
+            data: msgDate,
+            direcao: fromMe ? 'enviado' : 'recebido',
+            canal: 'whatsapp',
+            conteudo: texto,
+            mediaType,
+            externalId: msgId || undefined,
+          },
+        }).catch(() => null)
+        syncedMessages++
+      }
+
+      syncedChats++
+    }
+
+    return reply.send({ syncedChats, syncedMessages })
   })
 
-  // SSE — substitui Supabase Realtime para ChatWindow e ConversasList
+  // SSE — polling de mensagens novas (substitui Supabase Realtime)
   app.get('/chats/stream/:contatoId', { preValidation: [requireAuth] }, async (request, reply) => {
     const { contatoId } = z.object({ contatoId: z.string().uuid() }).parse(request.params)
+    const { accountId } = request.user as JwtPayload
+
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
     })
 
-    const keepAlive = setInterval(() => {
-      reply.raw.write(': keepalive\n\n')
-    }, 15000)
+    const send = (event: string, data: unknown) => {
+      reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+    }
 
-    request.raw.on('close', () => clearInterval(keepAlive))
-    // TODO: implementar polling de mensagens novas e emitir events SSE
+    let lastChecked = new Date()
+    const keepAlive = setInterval(() => reply.raw.write(': keepalive\n\n'), 15000)
+
+    const poll = setInterval(async () => {
+      try {
+        const novas = await prisma.interacao.findMany({
+          where: { contatoId, accountId, data: { gt: lastChecked } },
+          orderBy: { data: 'asc' },
+        })
+        if (novas.length > 0) {
+          lastChecked = novas[novas.length - 1].data
+          send('mensagens', novas)
+        }
+      } catch { /* connection may have closed */ }
+    }, 2000)
+
+    request.raw.on('close', () => {
+      clearInterval(keepAlive)
+      clearInterval(poll)
+    })
   })
 }
