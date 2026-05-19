@@ -4,16 +4,23 @@ import { requireAuth, JwtPayload } from '../lib/auth'
 import { prisma } from '../lib/prisma'
 import { getCredencial } from '../lib/credencial'
 
+async function getGlobalConfig(chave: string): Promise<string | null> {
+  const row = await prisma.configuracaoIntegracao.findUnique({ where: { chave } })
+  return row?.valor ?? null
+}
+
 export async function metaRoutes(app: FastifyInstance) {
   // Troca OAuth code por access token e cria conexão WhatsApp Oficial
   app.post('/meta/oauth-exchange', { preValidation: [requireAuth] }, async (request, reply) => {
     const { accountId } = request.user as JwtPayload
     const body = z.object({ code: z.string(), redirectUri: z.string().url().optional() }).parse(request.body)
 
-    const metaAppId = process.env.META_APP_ID
-    const metaAppSecret = process.env.META_APP_SECRET
+    const [metaAppId, metaAppSecret] = await Promise.all([
+      getGlobalConfig('META_APP_ID'),
+      getGlobalConfig('META_APP_SECRET'),
+    ])
     if (!metaAppId || !metaAppSecret) {
-      return reply.status(400).send({ message: 'META_APP_ID e META_APP_SECRET não configurados no servidor.' })
+      return reply.status(400).send({ message: 'META_APP_ID e META_APP_SECRET não configurados no painel admin.' })
     }
 
     // 1. Trocar code por access token
