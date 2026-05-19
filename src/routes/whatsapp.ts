@@ -93,7 +93,8 @@ export async function whatsappRoutes(app: FastifyInstance) {
 
       try {
         // Criar instância com apikey admin
-        const createRes = await fetch(`${baseUrl}/instance/create`, {
+        const createUrl = `${baseUrl}/instance/create`
+        const createRes = await fetch(createUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', apikey: globalKey },
           body: JSON.stringify({
@@ -105,7 +106,7 @@ export async function whatsappRoutes(app: FastifyInstance) {
 
         if (!createRes.ok) {
           const txt = await createRes.text()
-          return reply.status(502).send({ message: `Erro UazAPI create: ${txt}` })
+          return reply.status(502).send({ message: `Erro UazAPI [${createUrl}]: ${createRes.status} ${txt}` })
         }
 
         const createData = await createRes.json() as {
