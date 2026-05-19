@@ -21,8 +21,9 @@ async function getUazapiCredentials(accountId: string): Promise<{ baseUrl: strin
     }
   }
 
+  const rawBase = baseUrl ?? 'https://api.uazapi.com'
   return {
-    baseUrl: baseUrl ?? 'https://api.uazapi.com',
+    baseUrl: rawBase.replace(/\/+$/, ''), // remove trailing slash
     globalKey: globalKey?.valor ?? '',
   }
 }
@@ -71,6 +72,27 @@ export async function whatsappRoutes(app: FastifyInstance) {
       },
     })
     return reply.send({ conexoes })
+  })
+
+  // ── Testar conexão com UazAPI (diagnóstico) ───────────────────────────────
+  app.get('/whatsapp/testar-conexao', { preValidation: [requireAuth] }, async (request, reply) => {
+    const { accountId } = request.user as JwtPayload
+    const { baseUrl, globalKey } = await getUazapiCredentials(accountId)
+    if (!globalKey) {
+      return reply.send({ ok: false, erro: 'UAZAPI_GLOBAL_KEY não configurada no painel admin.', baseUrl })
+    }
+    try {
+      const testUrl = `${baseUrl}/instance/list`
+      const res = await fetch(testUrl, {
+        method: 'GET',
+        headers: { apikey: globalKey },
+        signal: AbortSignal.timeout(8000),
+      })
+      const txt = await res.text()
+      return reply.send({ ok: res.ok, status: res.status, baseUrl, url: testUrl, resposta: txt.slice(0, 500) })
+    } catch (err) {
+      return reply.send({ ok: false, erro: err instanceof Error ? err.message : String(err), baseUrl })
+    }
   })
 
   // ── Criar instância + retornar QR code ────────────────────────────────────
