@@ -173,10 +173,11 @@ export async function whatsappRoutes(app: FastifyInstance) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', admintoken: globalKey },
           body: JSON.stringify({ name: body.instanceName }),
+          signal: AbortSignal.timeout(10000),
         })
 
         if (!createRes.ok) {
-          const txt = await createRes.text()
+          const txt = await createRes.text().catch(() => createRes.statusText)
           return reply.status(502).send({ message: `Erro UazAPI [${createUrl}]: ${createRes.status} ${txt}` })
         }
 
@@ -219,31 +220,30 @@ export async function whatsappRoutes(app: FastifyInstance) {
           return reply.send({ conexao, alreadyConnected: true })
         }
 
-        // Buscar QR code via POST /instance/connect (uazapiGO V2)
+        // Buscar QR: tenta GET /instance/qr e POST /instance/connect com timeout curto
         let qrCode: string | null = createData.qrcode ?? createData.qr ?? createData.base64 ?? null
 
         if (!qrCode && instanceKey) {
+          // Dispara connect em background (configura webhook) sem bloquear
+          fetch(`${baseUrl}/instance/connect`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', token: instanceKey },
+            body: JSON.stringify({ webhook: webhookUrl }),
+            signal: AbortSignal.timeout(8000),
+          }).catch(() => null)
+
+          // Aguarda 1s para QR ficar disponível, então busca
+          await new Promise(r => setTimeout(r, 1000))
           try {
-            const connectRes = await fetch(`${baseUrl}/instance/connect`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', token: instanceKey },
-              body: JSON.stringify({ webhook: webhookUrl }),
+            const qrRes = await fetch(`${baseUrl}/instance/qr`, {
+              headers: { token: instanceKey },
+              signal: AbortSignal.timeout(6000),
             })
-            if (connectRes.ok) {
-              const qrData = await connectRes.json() as Record<string, unknown>
+            if (qrRes.ok) {
+              const qrData = await qrRes.json() as Record<string, unknown>
               qrCode = extractQr(qrData)
             }
-            // V2: QR pode estar em GET /instance/qr separado
-            if (!qrCode) {
-              const qrRes = await fetch(`${baseUrl}/instance/qr`, {
-                headers: { token: instanceKey },
-              })
-              if (qrRes.ok) {
-                const qrData = await qrRes.json() as Record<string, unknown>
-                qrCode = extractQr(qrData)
-              }
-            }
-          } catch { /* QR optional at this stage */ }
+          } catch { /* QR via polling depois */ }
         }
 
         return reply.status(201).send({ conexao, qrCode })
