@@ -81,18 +81,34 @@ export async function whatsappRoutes(app: FastifyInstance) {
     if (!globalKey) {
       return reply.send({ ok: false, erro: 'UAZAPI_GLOBAL_KEY não configurada no painel admin.', baseUrl })
     }
-    try {
-      const testUrl = `${baseUrl}/instance/list`
-      const res = await fetch(testUrl, {
-        method: 'GET',
-        headers: { apikey: globalKey },
-        signal: AbortSignal.timeout(8000),
-      })
-      const txt = await res.text()
-      return reply.send({ ok: res.ok, status: res.status, baseUrl, url: testUrl, resposta: txt.slice(0, 500) })
-    } catch (err) {
-      return reply.send({ ok: false, erro: err instanceof Error ? err.message : String(err), baseUrl })
+
+    // Testa vários formatos de endpoint para identificar qual versão da API está rodando
+    const candidates = [
+      '/instance/list',
+      '/v1/instance/list',
+      '/instances',
+      '/manager/instances',
+    ]
+
+    const resultados: Record<string, unknown> = {}
+    for (const path of candidates) {
+      try {
+        const res = await fetch(`${baseUrl}${path}`, {
+          method: 'GET',
+          headers: { apikey: globalKey, Authorization: `Bearer ${globalKey}` },
+          signal: AbortSignal.timeout(5000),
+        })
+        const txt = await res.text()
+        resultados[path] = { status: res.status, ok: res.ok, body: txt.slice(0, 200) }
+        if (res.ok) {
+          return reply.send({ ok: true, endpointFuncionando: path, status: res.status, baseUrl, resultados })
+        }
+      } catch (err) {
+        resultados[path] = { erro: err instanceof Error ? err.message : String(err) }
+      }
     }
+
+    return reply.send({ ok: false, baseUrl, resultados })
   })
 
   // ── Criar instância + retornar QR code ────────────────────────────────────
