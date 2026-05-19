@@ -2,15 +2,7 @@ import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma'
 import { requireAuth, JwtPayload } from '../lib/auth'
-import { decrypt } from '../lib/encryption'
-
-async function getCredencial(accountId: string, chave: string): Promise<string | null> {
-  const cred = await prisma.credencial.findUnique({
-    where: { accountId_chave: { accountId, chave } },
-  })
-  if (!cred?.ativa) return null
-  return decrypt(cred.valorCriptografado)
-}
+import { getCredencial, getUazapiConnection } from '../lib/credencial'
 
 async function scrapeWebsite(url: string, firecrawlKey: string | null): Promise<string> {
   if (firecrawlKey) {
@@ -118,7 +110,22 @@ export async function contatosRoutes(app: FastifyInstance) {
     const contato = await prisma.contato.findUnique({ where: { id }, select: { telefone: true } })
     if (!contato) return reply.status(404).send({ message: 'Contato não encontrado.' })
 
-    // TODO: integrar com provider WhatsApp para buscar foto de perfil
+    const { accountId } = request.user as JwtPayload
+    const conn = await getUazapiConnection(accountId)
+    if (!conn) return reply.send({ fotoUrl: null })
+
+    const phone = contato.telefone.replace(/\D/g, '')
+    try {
+      const res = await fetch(`${conn.baseUrl}/contact/getProfilePicture`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', token: conn.instanceKey },
+        body: JSON.stringify({ phone }),
+      })
+      if (res.ok) {
+        const data = await res.json() as { profilePictureUrl?: string; url?: string }
+        return reply.send({ fotoUrl: data.profilePictureUrl ?? data.url ?? null })
+      }
+    } catch { /* fallback */ }
     return reply.send({ fotoUrl: null })
   })
 
