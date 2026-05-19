@@ -56,6 +56,22 @@ async function uazapiAdminRequest(baseUrl: string, adminKey: string, method: str
   return res.json()
 }
 
+// Extrai QR code de resposta da UazAPI V2 em qualquer campo possível
+function extractQr(data: Record<string, unknown>): string | null {
+  return (
+    (data.qrcode as string) ??
+    (data.qr as string) ??
+    (data.base64 as string) ??
+    (data.qrCode as string) ??
+    (data.qr_code as string) ??
+    (data.qrCodeBase64 as string) ??
+    (data.qrbase64 as string) ??
+    (data.image as string) ??
+    (data.pairingCode as string) ??
+    null
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function whatsappRoutes(app: FastifyInstance) {
@@ -214,8 +230,18 @@ export async function whatsappRoutes(app: FastifyInstance) {
               body: JSON.stringify({ webhook: webhookUrl }),
             })
             if (connectRes.ok) {
-              const qrData = await connectRes.json() as { qrcode?: string; qr?: string; base64?: string }
-              qrCode = qrData.qrcode ?? qrData.qr ?? qrData.base64 ?? null
+              const qrData = await connectRes.json() as Record<string, unknown>
+              qrCode = extractQr(qrData)
+            }
+            // V2: QR pode estar em GET /instance/qr separado
+            if (!qrCode) {
+              const qrRes = await fetch(`${baseUrl}/instance/qr`, {
+                headers: { token: instanceKey },
+              })
+              if (qrRes.ok) {
+                const qrData = await qrRes.json() as Record<string, unknown>
+                qrCode = extractQr(qrData)
+              }
             }
           } catch { /* QR optional at this stage */ }
         }
@@ -245,11 +271,17 @@ export async function whatsappRoutes(app: FastifyInstance) {
 
     const { baseUrl } = await getUazapiCredentials(accountId)
     try {
-      // uazapiGO V2: POST /instance/connect (não GET)
-      const qrData = await uazapiRequest(baseUrl, conexao.instanceKey, 'POST', '/instance/connect', {}) as {
-        qrcode?: string; qr?: string; base64?: string
+      // uazapiGO V2: tenta GET /instance/qr, fallback para POST /instance/connect
+      let qrCode: string | null = null
+      try {
+        const qrRes = await uazapiRequest(baseUrl, conexao.instanceKey, 'GET', '/instance/qr') as Record<string, unknown>
+        qrCode = extractQr(qrRes)
+      } catch { /* fallback */ }
+      if (!qrCode) {
+        const connectData = await uazapiRequest(baseUrl, conexao.instanceKey, 'POST', '/instance/connect', {}) as Record<string, unknown>
+        qrCode = extractQr(connectData)
       }
-      return reply.send({ qrCode: qrData.qrcode ?? qrData.qr ?? qrData.base64 ?? null })
+      return reply.send({ qrCode })
     } catch (err) {
       return reply.status(502).send({ message: err instanceof Error ? err.message : 'Erro ao buscar QR.' })
     }
