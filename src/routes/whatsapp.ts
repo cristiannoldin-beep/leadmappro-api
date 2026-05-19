@@ -84,32 +84,43 @@ export async function whatsappRoutes(app: FastifyInstance) {
 
     const resultados: Record<string, unknown> = {}
 
-    // Testa POST /instance/create com body mínimo — 200/201 = chave válida
-    try {
-      const createRes = await fetch(`${baseUrl}/instance/create`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', token: globalKey, apikey: globalKey },
-        body: JSON.stringify({ instanceName: '__diag_test__' }),
-        signal: AbortSignal.timeout(8000),
-      })
-      const createTxt = await createRes.text()
-      resultados['POST /instance/create'] = { status: createRes.status, body: createTxt.slice(0, 300) }
-      if (createRes.ok) {
-        // Deleta a instância de teste imediatamente
-        await fetch(`${baseUrl}/instance/delete`, {
-          method: 'DELETE',
-          headers: { token: globalKey, apikey: globalKey },
+    // Testa vários paths POST para descobrir qual existe
+    const postPaths = [
+      '/instance/create',
+      '/manager/instance/create',
+      '/api/instance/create',
+      '/api/v1/instance/create',
+    ]
+    for (const path of postPaths) {
+      try {
+        const res = await fetch(`${baseUrl}${path}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', token: globalKey, apikey: globalKey },
           body: JSON.stringify({ instanceName: '__diag_test__' }),
-          signal: AbortSignal.timeout(5000),
-        }).catch(() => null)
-        return reply.send({ ok: true, endpointFuncionando: 'POST /instance/create', status: createRes.status, baseUrl, resultados })
+          signal: AbortSignal.timeout(6000),
+        })
+        const txt = await res.text()
+        resultados[`POST ${path}`] = { status: res.status, body: txt.slice(0, 300) }
+        if (res.ok || res.status === 401 || res.status === 403) {
+          // Endpoint encontrado (mesmo que auth falhe)
+          if (res.ok) {
+            await fetch(`${baseUrl}${path.replace('/create', '/delete')}`, {
+              method: 'DELETE',
+              headers: { token: globalKey, apikey: globalKey },
+              body: JSON.stringify({ instanceName: '__diag_test__' }),
+              signal: AbortSignal.timeout(5000),
+            }).catch(() => null)
+            return reply.send({ ok: true, endpointFuncionando: `POST ${path}`, status: res.status, baseUrl, resultados })
+          }
+          return reply.send({ ok: false, endpointEncontrado: `POST ${path}`, erroAuth: txt.slice(0, 300), baseUrl, resultados })
+        }
+      } catch (err) {
+        resultados[`POST ${path}`] = { erro: err instanceof Error ? err.message : String(err) }
       }
-    } catch (err) {
-      resultados['POST /instance/create'] = { erro: err instanceof Error ? err.message : String(err) }
     }
 
-    // Testa GET /instance/list (pode retornar lista vazia mas com 200)
-    for (const path of ['/instance/list', '/v1/instance/list', '/instances', '/']) {
+    // Testa GET para descobrir qualquer path ativo
+    for (const path of ['/instance/list', '/manager/instances', '/api/instances', '/api/instance/list', '/instances', '/']) {
       try {
         const res = await fetch(`${baseUrl}${path}`, {
           headers: { token: globalKey, apikey: globalKey },
