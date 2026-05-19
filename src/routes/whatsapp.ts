@@ -82,12 +82,17 @@ export async function whatsappRoutes(app: FastifyInstance) {
       return reply.send({ ok: false, erro: 'UAZAPI_GLOBAL_KEY não configurada no painel admin.', baseUrl })
     }
 
-    // Testa vários formatos de endpoint para identificar qual versão da API está rodando
     const candidates = [
+      // UazAPI v2
       '/instance/list',
+      '/instance/fetchInstances',
+      // UazAPI v1 / Evolution API v1
       '/v1/instance/list',
-      '/instances',
-      '/manager/instances',
+      '/v1/instance/fetchInstances',
+      // WAHA
+      '/api/sessions',
+      // Root (para identificar o servidor)
+      '/',
     ]
 
     const resultados: Record<string, unknown> = {}
@@ -99,7 +104,7 @@ export async function whatsappRoutes(app: FastifyInstance) {
           signal: AbortSignal.timeout(5000),
         })
         const txt = await res.text()
-        resultados[path] = { status: res.status, ok: res.ok, body: txt.slice(0, 200) }
+        resultados[path] = { status: res.status, ok: res.ok, body: txt.slice(0, 300) }
         if (res.ok) {
           return reply.send({ ok: true, endpointFuncionando: path, status: res.status, baseUrl, resultados })
         }
