@@ -296,19 +296,24 @@ export async function whatsappRoutes(app: FastifyInstance) {
 
     const { baseUrl } = await getUazapiCredentials(accountId)
     try {
-      const statusData = await uazapiRequest(baseUrl, conexao.instanceKey, 'GET', '/instance/status') as {
-        status?: string; connectionStatus?: string; connection_status?: string; state?: string; connected?: boolean; loggedIn?: boolean
-      }
-      const raw = statusData.status ?? statusData.connectionStatus ?? statusData.connection_status ?? statusData.state ?? 'unknown'
-      const dbStatus = raw === 'open' || raw === 'connected' || statusData.connected === true || statusData.loggedIn === true
-        ? 'connected'
-        : 'disconnected'
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const statusData = await uazapiRequest(baseUrl, conexao.instanceKey, 'GET', '/instance/status') as any
+      // UazAPI GO V2 retorna { connected: true, loggedIn: true, jid: "..." }
+      const isConnectedNow =
+        statusData?.connected === true ||
+        statusData?.loggedIn === true ||
+        statusData?.status === 'open' ||
+        statusData?.status === 'connected' ||
+        statusData?.connectionStatus === 'open' ||
+        statusData?.connection_status === 'open' ||
+        statusData?.state === 'open'
+      const dbStatus = isConnectedNow ? 'connected' : 'disconnected'
 
       if (conexao.status !== dbStatus) {
         await prisma.whatsappConexao.update({ where: { id }, data: { status: dbStatus } })
       }
 
-      return reply.send({ status: dbStatus, raw })
+      return reply.send({ status: dbStatus, isConnectedNow, raw: statusData })
     } catch {
       return reply.send({ status: conexao.status })
     }
