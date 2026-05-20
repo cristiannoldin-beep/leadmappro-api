@@ -297,10 +297,12 @@ export async function whatsappRoutes(app: FastifyInstance) {
     const { baseUrl } = await getUazapiCredentials(accountId)
     try {
       const statusData = await uazapiRequest(baseUrl, conexao.instanceKey, 'GET', '/instance/status') as {
-        status?: string; connectionStatus?: string; connection_status?: string; state?: string
+        status?: string; connectionStatus?: string; connection_status?: string; state?: string; connected?: boolean; loggedIn?: boolean
       }
       const raw = statusData.status ?? statusData.connectionStatus ?? statusData.connection_status ?? statusData.state ?? 'unknown'
-      const dbStatus = raw === 'open' || raw === 'connected' ? 'connected' : 'disconnected'
+      const dbStatus = raw === 'open' || raw === 'connected' || statusData.connected === true || statusData.loggedIn === true
+        ? 'connected'
+        : 'disconnected'
 
       if (conexao.status !== dbStatus) {
         await prisma.whatsappConexao.update({ where: { id }, data: { status: dbStatus } })
