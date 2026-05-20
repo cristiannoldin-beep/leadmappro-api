@@ -220,30 +220,37 @@ export async function whatsappRoutes(app: FastifyInstance) {
           return reply.send({ conexao, alreadyConnected: true })
         }
 
-        // Buscar QR: tenta GET /instance/qr e POST /instance/connect com timeout curto
+        // Buscar QR: uazapiGO V2 retorna QR na resposta do /instance/connect
         let qrCode: string | null = createData.qrcode ?? createData.qr ?? createData.base64 ?? null
 
         if (!qrCode && instanceKey) {
-          // Dispara connect em background (configura webhook) sem bloquear
-          fetch(`${baseUrl}/instance/connect`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', token: instanceKey },
-            body: JSON.stringify({ webhook: webhookUrl }),
-            signal: AbortSignal.timeout(8000),
-          }).catch(() => null)
-
-          // Aguarda 1s para QR ficar disponível, então busca
-          await new Promise(r => setTimeout(r, 1000))
+          // Awaita o connect — uazapiGO V2 retorna o QR diretamente nesta resposta
           try {
-            const qrRes = await fetch(`${baseUrl}/instance/qr`, {
-              headers: { token: instanceKey },
-              signal: AbortSignal.timeout(6000),
+            const connectRes = await fetch(`${baseUrl}/instance/connect`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', token: instanceKey },
+              body: JSON.stringify({ webhook: webhookUrl }),
+              signal: AbortSignal.timeout(15000),
             })
-            if (qrRes.ok) {
-              const qrData = await qrRes.json() as Record<string, unknown>
-              qrCode = extractQr(qrData)
+            if (connectRes.ok) {
+              const connectData = await connectRes.json() as Record<string, unknown>
+              qrCode = extractQr(connectData)
             }
-          } catch { /* QR via polling depois */ }
+          } catch { /* continua para polling */ }
+
+          // Se ainda sem QR, tenta GET /instance/qr com até 3 tentativas (2s cada)
+          for (let attempt = 0; attempt < 3 && !qrCode; attempt++) {
+            await new Promise(r => setTimeout(r, 2000))
+            try {
+              const qrRes = await fetch(`${baseUrl}/instance/qr`, {
+                headers: { token: instanceKey },
+                signal: AbortSignal.timeout(6000),
+              })
+              if (qrRes.ok) {
+                qrCode = extractQr(await qrRes.json() as Record<string, unknown>)
+              }
+            } catch { /* próxima tentativa */ }
+          }
         }
 
         return reply.status(201).send({ conexao, qrCode })
