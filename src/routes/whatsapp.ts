@@ -59,6 +59,8 @@ async function uazapiAdminRequest(baseUrl: string, adminKey: string, method: str
 // Extrai QR code de resposta da UazAPI V2 em qualquer campo possível
 function extractQr(data: Record<string, unknown>): string | null {
   return (
+    ((data.instance as Record<string, unknown>)?.qrcode as string) ??
+    ((data.data as Record<string, unknown>)?.qrcode as string) ??
     (data.qrcode as string) ??
     (data.qr as string) ??
     (data.base64 as string) ??
@@ -100,49 +102,30 @@ export async function whatsappRoutes(app: FastifyInstance) {
 
     const resultados: Record<string, unknown> = {}
 
-    // uazapiGO V2: POST /instance/create com admintoken e campo 'name'
+    // uazapiGO: POST /instance/init com tripla de headers
     try {
-      const res = await fetch(`${baseUrl}/instance/create`, {
+      const res = await fetch(`${baseUrl}/instance/init`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', admintoken: globalKey },
+        headers: { 'Content-Type': 'application/json', admintoken: globalKey, 'admin-token': globalKey, apikey: globalKey },
         body: JSON.stringify({ name: '__diag_test__' }),
         signal: AbortSignal.timeout(8000),
       })
       const txt = await res.text()
-      resultados['POST /instance/create (admintoken)'] = { status: res.status, body: txt.slice(0, 300) }
+      resultados['POST /instance/init (admintoken+admin-token+apikey)'] = { status: res.status, body: txt.slice(0, 300) }
       if (res.ok || res.status === 401 || res.status === 403) {
         if (res.ok) {
           await fetch(`${baseUrl}/instance/delete`, {
             method: 'DELETE',
-            headers: { 'Content-Type': 'application/json', admintoken: globalKey },
+            headers: { 'Content-Type': 'application/json', admintoken: globalKey, 'admin-token': globalKey, apikey: globalKey },
             body: JSON.stringify({ name: '__diag_test__' }),
             signal: AbortSignal.timeout(5000),
           }).catch(() => null)
-          return reply.send({ ok: true, endpointFuncionando: 'POST /instance/create', status: res.status, baseUrl, resultados })
+          return reply.send({ ok: true, endpointFuncionando: 'POST /instance/init', status: res.status, baseUrl, resultados })
         }
-        return reply.send({ ok: false, endpointEncontrado: 'POST /instance/create', erroAuth: txt.slice(0, 300), baseUrl, resultados })
+        return reply.send({ ok: false, endpointEncontrado: 'POST /instance/init', erroAuth: txt.slice(0, 300), baseUrl, resultados })
       }
     } catch (err) {
-      resultados['POST /instance/create (admintoken)'] = { erro: err instanceof Error ? err.message : String(err) }
-    }
-
-    // Fallback: testa com outros headers para compatibilidade
-    for (const [label, headers] of [
-      ['(token+apikey)', { token: globalKey, apikey: globalKey }],
-      ['(Authorization Bearer)', { Authorization: `Bearer ${globalKey}` }],
-    ] as [string, Record<string, string>][]) {
-      try {
-        const res = await fetch(`${baseUrl}/instance/create`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...headers },
-          body: JSON.stringify({ name: '__diag_test__' }),
-          signal: AbortSignal.timeout(5000),
-        })
-        const txt = await res.text()
-        resultados[`POST /instance/create ${label}`] = { status: res.status, body: txt.slice(0, 200) }
-      } catch (err) {
-        resultados[`POST /instance/create ${label}`] = { erro: err instanceof Error ? err.message : String(err) }
-      }
+      resultados['POST /instance/init (admintoken+admin-token+apikey)'] = { erro: err instanceof Error ? err.message : String(err) }
     }
 
     return reply.send({ ok: false, baseUrl, resultados })
@@ -167,11 +150,16 @@ export async function whatsappRoutes(app: FastifyInstance) {
       const webhookUrl = `${process.env.API_PUBLIC_URL ?? ''}/webhooks/whatsapp`
 
       try {
-        // uazapiGO V2: POST /instance/create com admintoken e campo 'name'
-        const createUrl = `${baseUrl}/instance/create`
+        // uazapiGO: POST /instance/init com tripla de headers de autenticação
+        const createUrl = `${baseUrl}/instance/init`
         const createRes = await fetch(createUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', admintoken: globalKey },
+          headers: {
+            'Content-Type': 'application/json',
+            admintoken: globalKey,
+            'admin-token': globalKey,
+            apikey: globalKey,
+          },
           body: JSON.stringify({ name: body.instanceName }),
           signal: AbortSignal.timeout(10000),
         })
@@ -220,11 +208,14 @@ export async function whatsappRoutes(app: FastifyInstance) {
           return reply.send({ conexao, alreadyConnected: true })
         }
 
-        // Buscar QR: uazapiGO V2 retorna QR na resposta do /instance/connect
-        let qrCode: string | null = createData.qrcode ?? createData.qr ?? createData.base64 ?? null
+        // Buscar QR: uazapiGO retorna QR na resposta do /instance/connect
+        let qrCode: string | null = extractQr(createData as unknown as Record<string, unknown>)
 
         if (!qrCode && instanceKey) {
-          // Awaita o connect — uazapiGO V2 retorna o QR diretamente nesta resposta
+          // Delay de 2s igual ao código de referência que funciona
+          await new Promise(r => setTimeout(r, 2000))
+
+          // Awaita o connect — uazapiGO retorna o QR diretamente nesta resposta
           try {
             const connectRes = await fetch(`${baseUrl}/instance/connect`, {
               method: 'POST',
