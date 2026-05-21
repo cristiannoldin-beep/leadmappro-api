@@ -326,9 +326,12 @@ export async function whatsappRoutes(app: FastifyInstance) {
     const conexao = await prisma.whatsappConexao.findFirst({ where: { id, accountId } })
     if (!conexao) return reply.status(404).send({ message: 'Conexão não encontrada.' })
 
-    if (conexao.provider === 'uazapi' && conexao.instanceKey) {
-      const { baseUrl } = await getUazapiCredentials(accountId)
-      try { await uazapiRequest(baseUrl, conexao.instanceKey, 'DELETE', '/instance/delete') } catch { /* ignore */ }
+    if (conexao.provider === 'uazapi' && conexao.instanceName) {
+      const { baseUrl, globalKey } = await getUazapiCredentials(accountId)
+      try {
+        // DELETE requer admintoken, não token de instância
+        await uazapiAdminRequest(baseUrl, globalKey, 'DELETE', '/instance/delete', { name: conexao.instanceName })
+      } catch { /* ignore — apaga do banco mesmo que UazAPI falhe */ }
     }
 
     await prisma.whatsappConexao.delete({ where: { id } })
