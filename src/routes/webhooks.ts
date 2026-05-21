@@ -27,15 +27,16 @@ export async function webhooksRoutes(app: FastifyInstance) {
   app.post('/webhooks/whatsapp', async (request, reply) => {
     const payload = request.body as UazApiEvent
 
-    // Evento de atualização de status de conexão
-    if (payload.event === 'connection.update') {
+    // Evento de atualização de status de conexão (UazAPI GO V2 pode enviar variações)
+    const isConnectionEvent = ['connection.update', 'ConnectionUpdate', 'connection_update'].includes(payload.event)
+    if (isConnectionEvent) {
       const instanceName = payload.instance ?? ''
-      const state = payload.data?.state ?? ''
+      const rawState = (payload.data?.state ?? '').toLowerCase()
 
-      const status = state === 'open' ? 'connected'
-        : state === 'close' ? 'disconnected'
-        : state === 'connecting' ? 'connecting'
-        : state
+      const status = rawState === 'open' || rawState === 'connected' ? 'connected'
+        : rawState === 'close' || rawState === 'closed' || rawState === 'disconnected' ? 'disconnected'
+        : rawState === 'connecting' ? 'connecting'
+        : rawState || 'disconnected'
 
       if (instanceName) {
         await prisma.whatsappConexao.updateMany({
@@ -54,8 +55,8 @@ export async function webhooksRoutes(app: FastifyInstance) {
       return reply.status(200).send({ received: true })
     }
 
-    // Evento de mensagem recebida
-    if (payload.event === 'messages.upsert') {
+    // Evento de mensagem recebida (UazAPI GO V2: messages.upsert ou MessagesUpsert)
+    if (['messages.upsert', 'MessagesUpsert', 'messages_upsert'].includes(payload.event)) {
       const key = payload.data?.key
       const fromMe = key?.fromMe ?? false
       if (fromMe) return reply.status(200).send({ received: true }) // Ignora mensagens enviadas
