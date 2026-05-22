@@ -4,6 +4,24 @@ import { prisma } from '../lib/prisma'
 import { requireAuth, JwtPayload } from '../lib/auth'
 import { decrypt } from '../lib/encryption'
 
+// ── Evolution API ─────────────────────────────────────────────────────────────
+const EVO_URL = (process.env.EVOLUTION_API_URL ?? '').replace(/\/+$/, '')
+const EVO_KEY = process.env.EVOLUTION_API_KEY ?? ''
+
+async function evoRequest(method: string, path: string, body?: unknown) {
+  const res = await fetch(`${EVO_URL}${path}`, {
+    method,
+    headers: { 'Content-Type': 'application/json', apikey: EVO_KEY },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    signal: AbortSignal.timeout(15000),
+  })
+  if (!res.ok) {
+    const err = await res.text().catch(() => res.statusText)
+    throw new Error(`Evolution ${method} ${path}: ${res.status} ${err}`)
+  }
+  return res.json()
+}
+
 // ── Credenciais UazAPI ────────────────────────────────────────────────────────
 async function getUazapiCredentials(accountId: string): Promise<{ baseUrl: string; globalKey: string }> {
   const [globalUrl, globalKey] = await Promise.all([
@@ -23,7 +41,7 @@ async function getUazapiCredentials(accountId: string): Promise<{ baseUrl: strin
 
   const rawBase = baseUrl ?? 'https://api.uazapi.com'
   return {
-    baseUrl: rawBase.replace(/\/+$/, ''), // remove trailing slash
+    baseUrl: rawBase.replace(/\/+$/, ''),
     globalKey: globalKey?.valor ?? '',
   }
 }
@@ -135,12 +153,94 @@ export async function whatsappRoutes(app: FastifyInstance) {
   app.post('/whatsapp/conexoes', { preValidation: [requireAuth] }, async (request, reply) => {
     const { accountId } = request.user as JwtPayload
     const body = z.object({
-      provider: z.enum(['meta_official', 'uazapi']),
+      provider: z.enum(['meta_official', 'uazapi', 'evolution']),
       apelido: z.string().optional(),
       instanceName: z.string().min(3),
       instanceKey: z.string().optional(),
     }).parse(request.body)
 
+    // ── Evolution API ──────────────────────────────────────────────────────
+    if (body.provider === 'evolution') {
+      if (!EVO_URL || !EVO_KEY) {
+        return reply.status(400).send({ message: 'Evolution API não configurada. Adicione EVOLUTION_API_URL e EVOLUTION_API_KEY nas variáveis de ambiente.' })
+      }
+
+      const webhookUrl = `${process.env.API_PUBLIC_URL ?? ''}/webhooks/evolution`
+
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const createData = await evoRequest('POST', '/instance/create', {
+          instanceName: body.instanceName,
+          integration: 'WHATSAPP-BAILEYS',
+          qrcode: true,
+          groupsIgnore: true,
+          readMessages: false,
+          readStatus: false,
+        }) as any
+
+        const instanceKey: string = createData.hash?.apikey ?? createData.token ?? ''
+        const instanceStatus: string = (createData.instance?.status ?? '').toLowerCase()
+        const alreadyConnected = instanceStatus === 'open' || instanceStatus === 'connected'
+
+        // Salvar/atualizar conexão no banco
+        const existing = await prisma.whatsappConexao.findFirst({
+          where: { accountId, instanceName: body.instanceName },
+        })
+
+        const conexaoData = {
+          accountId,
+          provider: 'evolution',
+          apelido: body.apelido ?? body.instanceName,
+          instanceName: body.instanceName,
+          instanceKey,
+          status: alreadyConnected ? 'connected' : 'disconnected',
+        }
+
+        const conexao = existing
+          ? await prisma.whatsappConexao.update({ where: { id: existing.id }, data: conexaoData })
+          : await prisma.whatsappConexao.create({ data: conexaoData })
+
+        // Configurar webhook
+        if (webhookUrl) {
+          evoRequest('POST', `/webhook/set/${body.instanceName}`, {
+            enabled: true,
+            url: webhookUrl,
+            webhookByEvents: false,
+            webhookBase64: false,
+            events: ['QRCODE_UPDATED', 'CONNECTION_UPDATE', 'MESSAGES_UPSERT'],
+          }).catch(() => null)
+        }
+
+        if (alreadyConnected) {
+          return reply.send({ conexao, alreadyConnected: true })
+        }
+
+        // QR code pode vir diretamente na resposta de criação
+        let qrCode: string | null = null
+        const qrcodeObj = createData.qrcode
+        if (qrcodeObj?.code) {
+          qrCode = qrcodeObj.code.startsWith('data:') ? qrcodeObj.code : `data:image/png;base64,${qrcodeObj.code}`
+        }
+
+        // Se não veio na criação, busca via /instance/connect
+        if (!qrCode) {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const connectData = await evoRequest('GET', `/instance/connect/${body.instanceName}`) as any
+            if (connectData.code) {
+              qrCode = connectData.code.startsWith('data:') ? connectData.code : `data:image/png;base64,${connectData.code}`
+            }
+          } catch { /* continua sem QR */ }
+        }
+
+        return reply.status(201).send({ conexao, qrCode })
+
+      } catch (err) {
+        return reply.status(502).send({ message: err instanceof Error ? err.message : 'Erro ao criar instância Evolution.' })
+      }
+    }
+
+    // ── UazAPI ────────────────────────────────────────────────────────────
     if (body.provider === 'uazapi') {
       const { baseUrl, globalKey } = await getUazapiCredentials(accountId)
       if (!globalKey) {
@@ -250,7 +350,7 @@ export async function whatsappRoutes(app: FastifyInstance) {
       }
     }
 
-    // Meta Official — apenas salva credenciais
+    // ── Meta Official — apenas salva credenciais ───────────────────────────
     const conexao = await prisma.whatsappConexao.create({ data: { ...body, accountId } })
     const { instanceKey: _, ...safeConexao } = conexao
     return reply.status(201).send({ conexao: safeConexao })
@@ -262,8 +362,26 @@ export async function whatsappRoutes(app: FastifyInstance) {
     const { accountId } = request.user as JwtPayload
     const conexao = await prisma.whatsappConexao.findFirst({ where: { id, accountId } })
     if (!conexao) return reply.status(404).send({ message: 'Conexão não encontrada.' })
+
+    // ── Evolution QR ───────────────────────────────────────────────────────
+    if (conexao.provider === 'evolution') {
+      if (!conexao.instanceName) return reply.status(400).send({ message: 'instanceName ausente.' })
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const data = await evoRequest('GET', `/instance/connect/${conexao.instanceName}`) as any
+        let qrCode: string | null = null
+        if (data.code) {
+          qrCode = data.code.startsWith('data:') ? data.code : `data:image/png;base64,${data.code}`
+        }
+        return reply.send({ qrCode })
+      } catch (err) {
+        return reply.status(502).send({ message: err instanceof Error ? err.message : 'Erro ao buscar QR Evolution.' })
+      }
+    }
+
+    // ── UazAPI QR ──────────────────────────────────────────────────────────
     if (conexao.provider !== 'uazapi' || !conexao.instanceKey) {
-      return reply.status(400).send({ message: 'QR Code disponível apenas para instâncias UazAPI.' })
+      return reply.status(400).send({ message: 'QR Code disponível apenas para instâncias UazAPI ou Evolution.' })
     }
 
     const { baseUrl } = await getUazapiCredentials(accountId)
@@ -291,6 +409,26 @@ export async function whatsappRoutes(app: FastifyInstance) {
     const conexao = await prisma.whatsappConexao.findFirst({ where: { id, accountId } })
     if (!conexao) return reply.status(404).send({ message: 'Conexão não encontrada.' })
 
+    // ── Evolution status ───────────────────────────────────────────────────
+    if (conexao.provider === 'evolution') {
+      if (!conexao.instanceName) return reply.send({ status: conexao.status })
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const data = await evoRequest('GET', `/instance/connectionState/${conexao.instanceName}`) as any
+        const rawState = (data?.instance?.state ?? data?.state ?? '').toLowerCase()
+        const isConnectedNow = rawState === 'open' || rawState === 'connected'
+        const dbStatus = isConnectedNow ? 'connected' : rawState === 'connecting' ? 'connecting' : 'disconnected'
+
+        if (conexao.status !== dbStatus) {
+          await prisma.whatsappConexao.update({ where: { id }, data: { status: dbStatus } })
+        }
+        return reply.send({ status: dbStatus, isConnectedNow, raw: data })
+      } catch {
+        return reply.send({ status: conexao.status })
+      }
+    }
+
+    // ── UazAPI status ──────────────────────────────────────────────────────
     if (conexao.provider !== 'uazapi' || !conexao.instanceKey) {
       return reply.send({ status: conexao.status })
     }
@@ -327,10 +465,17 @@ export async function whatsappRoutes(app: FastifyInstance) {
     const conexao = await prisma.whatsappConexao.findFirst({ where: { id, accountId } })
     if (!conexao) return reply.status(404).send({ message: 'Conexão não encontrada.' })
 
+    // ── Remover da Evolution ───────────────────────────────────────────────
+    if (conexao.provider === 'evolution' && conexao.instanceName) {
+      try {
+        await evoRequest('DELETE', `/instance/delete/${conexao.instanceName}`)
+      } catch { /* ignore — apaga do banco mesmo que Evolution falhe */ }
+    }
+
+    // ── Remover da UazAPI ──────────────────────────────────────────────────
     if (conexao.provider === 'uazapi' && conexao.instanceName) {
       const { baseUrl, globalKey } = await getUazapiCredentials(accountId)
       try {
-        // DELETE requer admintoken, não token de instância
         await uazapiAdminRequest(baseUrl, globalKey, 'DELETE', '/instance/delete', { name: conexao.instanceName })
       } catch { /* ignore — apaga do banco mesmo que UazAPI falhe */ }
     }

@@ -104,8 +104,94 @@ export async function webhooksRoutes(app: FastifyInstance) {
     return reply.status(200).send({ received: true })
   })
 
-  // Evolution está substituído por UazAPI — mantém rota para retrocompatibilidade
-  app.post('/webhooks/evolution', async (_request, reply) => {
+  // Evolution API webhook
+  app.post('/webhooks/evolution', async (request, reply) => {
+    const payload = request.body as {
+      event?: string
+      instance?: string
+      data?: {
+        state?: string
+        wuid?: string
+        profileName?: string
+        key?: { remoteJid?: string; fromMe?: boolean; id?: string }
+        message?: { conversation?: string; extendedTextMessage?: { text?: string }; imageMessage?: { caption?: string }; videoMessage?: { caption?: string } }
+        messageType?: string
+        messageTimestamp?: number
+        pushName?: string
+      }
+    }
+
+    const event = payload.event ?? ''
+    const instanceName = payload.instance ?? ''
+
+    // connection.update → atualiza status no banco
+    if (['connection.update', 'CONNECTION_UPDATE'].includes(event)) {
+      const rawState = (payload.data?.state ?? '').toLowerCase()
+      const status = rawState === 'open' || rawState === 'connected' ? 'connected'
+        : rawState === 'close' || rawState === 'closed' || rawState === 'disconnected' ? 'disconnected'
+        : rawState === 'connecting' ? 'connecting'
+        : rawState || 'disconnected'
+
+      if (instanceName) {
+        await prisma.whatsappConexao.updateMany({
+          where: { instanceName },
+          data: { status, updatedAt: new Date() },
+        })
+
+        // Extrair e salvar número quando conectado (Evolution envia wuid: "5511999@s.whatsapp.net")
+        if (status === 'connected' && payload.data?.wuid) {
+          const numeroTelefone = payload.data.wuid.replace('@s.whatsapp.net', '').replace('@c.us', '')
+          if (numeroTelefone) {
+            await prisma.whatsappConexao.updateMany({
+              where: { instanceName },
+              data: { numeroTelefone },
+            })
+          }
+        }
+      }
+      return reply.status(200).send({ received: true })
+    }
+
+    // messages.upsert → registrar mensagem recebida
+    if (['messages.upsert', 'MESSAGES_UPSERT'].includes(event)) {
+      const key = payload.data?.key
+      const fromMe = key?.fromMe ?? false
+      if (fromMe) return reply.status(200).send({ received: true })
+
+      const remoteJid = key?.remoteJid ?? ''
+      const telefone = remoteJid.replace('@s.whatsapp.net', '').replace('@c.us', '')
+      if (!telefone) return reply.status(200).send({ received: true })
+
+      const msg = payload.data?.message
+      const texto = msg?.conversation ?? msg?.extendedTextMessage?.text ?? msg?.imageMessage?.caption ?? msg?.videoMessage?.caption ?? ''
+      if (!texto) return reply.status(200).send({ received: true })
+
+      const conexao = await prisma.whatsappConexao.findFirst({ where: { instanceName } })
+      if (!conexao) return reply.status(200).send({ received: true })
+
+      const telefoneFormatado = telefone.startsWith('55') ? telefone : `55${telefone}`
+      let contato = await prisma.contato.findFirst({ where: { telefone: { in: [telefone, telefoneFormatado] } } })
+      if (!contato) {
+        contato = await prisma.contato.create({
+          data: {
+            nomeEmpresa: payload.data?.pushName ?? 'Contato WhatsApp',
+            telefone: telefoneFormatado,
+          },
+        })
+      }
+
+      await prisma.interacao.create({
+        data: {
+          contatoId: contato.id,
+          accountId: conexao.accountId,
+          direcao: 'recebido',
+          canal: 'whatsapp',
+          conteudo: texto,
+          externalId: key?.id,
+        },
+      })
+    }
+
     return reply.status(200).send({ received: true })
   })
 
