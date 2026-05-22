@@ -167,22 +167,17 @@ export async function whatsappRoutes(app: FastifyInstance) {
           return reply.status(502).send({ message: `Erro UazAPI [${createUrl}]: ${createRes.status} ${txt}` })
         }
 
-        const createData = await createRes.json() as {
-          instanceKey?: string
-          token?: string
-          status?: string
-          qrcode?: string
-          qr?: string
-          base64?: string
-          alreadyConnected?: boolean
-          connection_status?: string
-        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const createData = await createRes.json() as any
 
         // uazapiGO V2 retorna 'token' para operações de instância
         const instanceKey = createData.token ?? createData.instanceKey ?? body.instanceKey ?? ''
-        const alreadyConnected = createData.alreadyConnected
-          || createData.status === 'connected'
-          || createData.connection_status === 'open'
+        const rawCreateState = (createData?.state ?? createData?.status ?? createData?.connection_status ?? createData?.connectionStatus ?? '').toString().toLowerCase()
+        const alreadyConnected = !!createData.alreadyConnected
+          || createData.connected === true
+          || createData.loggedIn === true
+          || rawCreateState === 'connected'
+          || rawCreateState === 'open'
 
         // Salvar/atualizar conexão no banco
         const existing = await prisma.whatsappConexao.findFirst({
@@ -218,12 +213,18 @@ export async function whatsappRoutes(app: FastifyInstance) {
             const connectRes = await fetch(`${baseUrl}/instance/connect`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', token: instanceKey },
-              body: JSON.stringify({ webhook: webhookUrl }),
+              body: JSON.stringify({}),
               signal: AbortSignal.timeout(15000),
             })
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const connectData = await connectRes.json().catch(() => ({})) as any
             if (connectRes.ok) {
-              const connectData = await connectRes.json() as Record<string, unknown>
-              qrCode = extractQr(connectData)
+              qrCode = extractQr(connectData as Record<string, unknown>)
+            }
+            // 486 = instância já conectada na UazAPI mas DB desatualizado
+            if (!connectRes.ok && (connectRes.status === 486 || connectData?.connected === true || connectData?.loggedIn === true)) {
+              await prisma.whatsappConexao.update({ where: { id: conexao.id }, data: { status: 'connected' } })
+              return reply.send({ conexao: { ...conexao, status: 'connected' }, alreadyConnected: true })
             }
           } catch { /* continua para polling */ }
 
@@ -294,46 +295,29 @@ export async function whatsappRoutes(app: FastifyInstance) {
       return reply.send({ status: conexao.status })
     }
 
-    const { baseUrl, globalKey } = await getUazapiCredentials(accountId)
-
-    // Tenta via token de instância; se falhar (ex: 486), usa admin list como fallback
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let statusData: any = null
+    const { baseUrl } = await getUazapiCredentials(accountId)
     try {
-      statusData = await uazapiRequest(baseUrl, conexao.instanceKey, 'GET', '/instance/status')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const statusData = await fetch(`${baseUrl}/instance/status`, {
+        headers: { token: conexao.instanceKey },
+        signal: AbortSignal.timeout(6000),
+      }).then(r => r.json()) as any
+
+      const rawState = (statusData?.state ?? statusData?.status ?? statusData?.connectionStatus ?? statusData?.connection_status ?? '').toString().toLowerCase()
+      const isConnectedNow =
+        statusData?.connected === true ||
+        statusData?.loggedIn === true ||
+        rawState === 'open' ||
+        rawState === 'connected'
+      const dbStatus = isConnectedNow ? 'connected' : 'disconnected'
+
+      if (conexao.status !== dbStatus) {
+        await prisma.whatsappConexao.update({ where: { id }, data: { status: dbStatus } })
+      }
+      return reply.send({ status: dbStatus, isConnectedNow, raw: statusData })
     } catch {
-      // Fallback: busca o status via endpoint admin /instance/list
-      try {
-        const list = await uazapiAdminRequest(baseUrl, globalKey, 'GET', '/instance/list') as any[]
-        const found = Array.isArray(list)
-          ? list.find((i: any) =>
-              i.name === conexao.instanceName ||
-              i.instance === conexao.instanceName ||
-              i.instanceName === conexao.instanceName
-            )
-          : null
-        if (found) statusData = found
-      } catch { /* sem fallback disponível */ }
+      return reply.send({ status: conexao.status })
     }
-
-    if (!statusData) return reply.send({ status: conexao.status })
-
-    // UazAPI GO V2 pode retornar connected/loggedIn/state/status em diferentes formatos
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const raw = statusData as any
-    const rawState = (raw?.state ?? raw?.status ?? raw?.connectionStatus ?? raw?.connection_status ?? '').toString().toLowerCase()
-    const isConnectedNow =
-      raw?.connected === true ||
-      raw?.loggedIn === true ||
-      rawState === 'open' ||
-      rawState === 'connected'
-    const dbStatus = isConnectedNow ? 'connected' : 'disconnected'
-
-    if (conexao.status !== dbStatus) {
-      await prisma.whatsappConexao.update({ where: { id }, data: { status: dbStatus } })
-    }
-
-    return reply.send({ status: dbStatus, isConnectedNow, raw: statusData })
   })
 
   // ── Deletar instância ──────────────────────────────────────────────────────
