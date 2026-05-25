@@ -216,10 +216,11 @@ export async function whatsappRoutes(app: FastifyInstance) {
         }
 
         // QR code pode vir diretamente na resposta de criação
+        // Evolution retorna: qrcode.base64 = imagem PNG; qrcode.code = string raw (não é base64)
         let qrCode: string | null = null
         const qrcodeObj = createData.qrcode
-        if (qrcodeObj?.code) {
-          qrCode = qrcodeObj.code.startsWith('data:') ? qrcodeObj.code : `data:image/png;base64,${qrcodeObj.code}`
+        if (qrcodeObj?.base64) {
+          qrCode = qrcodeObj.base64.startsWith('data:') ? qrcodeObj.base64 : `data:image/png;base64,${qrcodeObj.base64}`
         }
 
         // Se não veio na criação, busca via /instance/connect
@@ -227,8 +228,8 @@ export async function whatsappRoutes(app: FastifyInstance) {
           try {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const connectData = await evoRequest('GET', `/instance/connect/${body.instanceName}`) as any
-            if (connectData.code) {
-              qrCode = connectData.code.startsWith('data:') ? connectData.code : `data:image/png;base64,${connectData.code}`
+            if (connectData.base64) {
+              qrCode = connectData.base64.startsWith('data:') ? connectData.base64 : `data:image/png;base64,${connectData.base64}`
             }
           } catch { /* continua sem QR */ }
         }
@@ -370,8 +371,9 @@ export async function whatsappRoutes(app: FastifyInstance) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const data = await evoRequest('GET', `/instance/connect/${conexao.instanceName}`) as any
         let qrCode: string | null = null
-        if (data.code) {
-          qrCode = data.code.startsWith('data:') ? data.code : `data:image/png;base64,${data.code}`
+        // Evolution: base64 = imagem PNG; code = string raw do QR (não é base64)
+        if (data.base64) {
+          qrCode = data.base64.startsWith('data:') ? data.base64 : `data:image/png;base64,${data.base64}`
         }
         return reply.send({ qrCode })
       } catch (err) {
