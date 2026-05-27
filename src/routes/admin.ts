@@ -59,6 +59,7 @@ export async function adminRoutes(app: FastifyInstance) {
       status: acc.status,
       planId: acc.planId,
       plan: acc.plan,
+      trialEndsAt: acc.trialEndsAt,
       createdAt: acc.createdAt,
       owner: acc.members[0]?.user ?? null,
       leadsCount: leadsPerAccount[acc.id] ?? 0,
@@ -152,6 +153,28 @@ export async function adminRoutes(app: FastifyInstance) {
       prisma.account.count({ where: { status: 'active' } }),
     ])
     return reply.send({ total, active, openaiCost: 0, mapsCost: 0 })
+  })
+
+  // ── Listas de uma conta específica ───────────────────────────────────────
+  app.get('/admin/accounts/:id/listas', { preValidation: [requireAdmin] }, async (request, reply) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params)
+    const listas = await prisma.lista.findMany({
+      where: { accountId: id },
+      orderBy: { dataCriacao: 'desc' },
+      include: { _count: { select: { listaContatos: true } } },
+    })
+    return reply.send({
+      listas: listas.map((l) => ({
+        id: l.id,
+        nome: l.nome,
+        origem: l.origem,
+        segmento: l.segmento,
+        cidade: l.cidade,
+        estado: l.estado,
+        dataCriacao: l.dataCriacao,
+        totalContatos: l._count.listaContatos,
+      })),
+    })
   })
 
   // ── Logs (audit) ──────────────────────────────────────────────────────────

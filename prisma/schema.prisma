@@ -38,13 +38,14 @@ model Profile {
 }
 
 model Account {
-  id        String   @id @default(uuid())
-  name      String
-  slug      String   @unique
-  status    String   @default("active")
-  planId    String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String    @id @default(uuid())
+  name         String
+  slug         String    @unique
+  status       String    @default("active") // active | trialing | past_due | suspended
+  planId       String?
+  trialEndsAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   plan               Plan?                  @relation(fields: [planId], references: [id])
   members            AccountMember[]
