@@ -150,7 +150,7 @@ export async function adminRoutes(app: FastifyInstance) {
   app.get('/admin/stats', { preValidation: [requireAdmin] }, async (_request, reply) => {
     const [total, active] = await Promise.all([
       prisma.account.count(),
-      prisma.account.count({ where: { status: 'active' } }),
+      prisma.account.count({ where: { status: { in: ['active', 'trialing'] } } }),
     ])
     return reply.send({ total, active, openaiCost: 0, mapsCost: 0 })
   })
@@ -161,6 +161,7 @@ export async function adminRoutes(app: FastifyInstance) {
     const listas = await prisma.lista.findMany({
       where: { accountId: id },
       orderBy: { dataCriacao: 'desc' },
+      take: 200,
       include: { _count: { select: { listaContatos: true } } },
     })
     return reply.send({

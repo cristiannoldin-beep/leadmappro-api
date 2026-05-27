@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma'
-import { requireAuth, JwtPayload } from '../lib/auth'
+import { requireAuth, requireActiveAccount, JwtPayload } from '../lib/auth'
 import { decrypt } from '../lib/encryption'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -144,7 +144,7 @@ export async function campanhasRoutes(app: FastifyInstance) {
     return reply.send({ campanhas })
   })
 
-  app.post('/campanhas', { preValidation: [requireAuth] }, async (request, reply) => {
+  app.post('/campanhas', { preValidation: [requireActiveAccount] }, async (request, reply) => {
     const { sub: userId, accountId } = request.user as JwtPayload
     const body = z.object({
       nome: z.string().min(1),
@@ -185,7 +185,7 @@ export async function campanhasRoutes(app: FastifyInstance) {
   })
 
   // Iniciar campanha — copia contatos válidos da lista para campanha_contatos
-  app.post('/campanhas/:id/iniciar', { preValidation: [requireAuth] }, async (request, reply) => {
+  app.post('/campanhas/:id/iniciar', { preValidation: [requireActiveAccount] }, async (request, reply) => {
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params)
     const { accountId } = request.user as JwtPayload
     const campanha = await prisma.campanha.findFirst({ where: { id, accountId } })
@@ -277,7 +277,7 @@ export async function campanhasRoutes(app: FastifyInstance) {
   })
 
   // Disparo manual — autenticado, para testes ou uso pontual
-  app.post('/campanhas/:id/disparar', { preValidation: [requireAuth] }, async (request, reply) => {
+  app.post('/campanhas/:id/disparar', { preValidation: [requireActiveAccount] }, async (request, reply) => {
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params)
     const { accountId } = request.user as JwtPayload
     const campanha = await prisma.campanha.findFirst({ where: { id, accountId } })

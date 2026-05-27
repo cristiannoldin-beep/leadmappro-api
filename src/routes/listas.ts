@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma'
-import { requireAuth, JwtPayload } from '../lib/auth'
+import { requireAuth, requireActiveAccount, JwtPayload } from '../lib/auth'
 
 export async function listasRoutes(app: FastifyInstance) {
   app.get('/listas', { preValidation: [requireAuth] }, async (request, reply) => {
@@ -15,7 +15,7 @@ export async function listasRoutes(app: FastifyInstance) {
     return reply.send({ listas })
   })
 
-  app.post('/listas', { preValidation: [requireAuth] }, async (request, reply) => {
+  app.post('/listas', { preValidation: [requireActiveAccount] }, async (request, reply) => {
     const { sub: userId, accountId } = request.user as JwtPayload
     const body = z.object({
       nome: z.string().min(1),

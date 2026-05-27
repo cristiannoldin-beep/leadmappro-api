@@ -24,9 +24,9 @@ export async function authRoutes(app: FastifyInstance) {
     if (existing) return reply.status(409).send({ message: 'Este email já está cadastrado.' })
 
     const hash = await bcrypt.hash(body.password, 12)
-    const totalUsers = await prisma.profile.count()
 
     const profile = await prisma.$transaction(async (tx) => {
+      const totalUsers = await tx.profile.count()
       const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)
       const account = await tx.account.create({
         data: {
