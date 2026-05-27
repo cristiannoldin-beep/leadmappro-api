@@ -177,6 +177,51 @@ export async function adminRoutes(app: FastifyInstance) {
     })
   })
 
+  // ── Contatos de uma lista específica ────────────────────────────────────
+  app.get('/admin/accounts/:accountId/listas/:listaId/contatos', { preValidation: [requireAdmin] }, async (request, reply) => {
+    const { accountId, listaId } = z.object({
+      accountId: z.string().uuid(),
+      listaId: z.string().uuid(),
+    }).parse(request.params)
+    const { page, limit } = z.object({
+      page: z.coerce.number().default(1),
+      limit: z.coerce.number().default(50),
+    }).parse(request.query)
+
+    const lista = await prisma.lista.findFirst({ where: { id: listaId, accountId } })
+    if (!lista) return reply.status(404).send({ message: 'Lista não encontrada' })
+
+    const skip = (page - 1) * limit
+    const [listaContatos, total] = await Promise.all([
+      prisma.listaContato.findMany({
+        where: { listaId },
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        include: { contato: { select: { nomeEmpresa: true, telefone: true, cidade: true, estado: true, atividade: true, website: true } } },
+      }),
+      prisma.listaContato.count({ where: { listaId } }),
+    ])
+
+    return reply.send({
+      contatos: listaContatos.map((lc) => ({
+        id: lc.id,
+        nomeEmpresa: lc.contato.nomeEmpresa,
+        telefone: lc.contato.telefone,
+        cidade: lc.contato.cidade,
+        estado: lc.contato.estado,
+        atividade: lc.contato.atividade,
+        website: lc.contato.website,
+        statusWhatsapp: lc.statusWhatsapp,
+        statusNaLista: lc.statusNaLista,
+        mensagemEnviada: lc.mensagemEnviada,
+      })),
+      total,
+      page,
+      pages: Math.ceil(total / limit),
+    })
+  })
+
   // ── Logs (audit) ──────────────────────────────────────────────────────────
   app.get('/admin/logs', { preValidation: [requireAdmin] }, async (request, reply) => {
     const query = z.object({ page: z.coerce.number().default(1), limit: z.coerce.number().default(50) }).parse(request.query)
