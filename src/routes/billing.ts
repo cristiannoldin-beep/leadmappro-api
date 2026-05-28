@@ -39,6 +39,7 @@ export async function billingRoutes(app: FastifyInstance) {
         ? { ...account.plan, price: Number(account.plan.price) }
         : null,
       status: account?.status ?? 'active',
+      trialEndsAt: account?.trialEndsAt ?? null,
     })
   })
 
