@@ -22,6 +22,7 @@ import { metaRoutes } from './routes/meta'
 import { adminRoutes } from './routes/admin'
 import { dashboardRoutes } from './routes/dashboard'
 import { crmRoutes } from './routes/crm'
+import { enriquecimentoRoutes } from './routes/enriquecimento'
 
 const fastify = Fastify({
   logger: true,
@@ -71,6 +72,7 @@ fastify.register(metaRoutes)
 fastify.register(adminRoutes)
 fastify.register(dashboardRoutes)
 fastify.register(crmRoutes)
+fastify.register(enriquecimentoRoutes)
 
 const start = async () => {
   await fastify.listen({ port: Number(process.env.PORT) || 3333, host: process.env.HOST || '0.0.0.0' })
