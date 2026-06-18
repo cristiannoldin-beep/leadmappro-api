@@ -148,6 +148,27 @@ export async function webhooksRoutes(app: FastifyInstance) {
             })
           }
         }
+
+        // Conta estável — ativa eventos de mensagens no webhook (foi omitido na criação)
+        if (status === 'connected') {
+          const evoUrl = (process.env.EVOLUTION_API_URL ?? '').replace(/\/+$/, '')
+          const evoKey = process.env.EVOLUTION_API_KEY ?? ''
+          const apiPublicUrl = process.env.API_PUBLIC_URL ?? ''
+          if (evoUrl && evoKey && apiPublicUrl) {
+            fetch(`${evoUrl}/webhook/set/${instanceName}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', apikey: evoKey },
+              body: JSON.stringify({
+                enabled: true,
+                url: `${apiPublicUrl}/webhooks/evolution`,
+                webhookByEvents: false,
+                webhookBase64: false,
+                events: ['QRCODE_UPDATED', 'CONNECTION_UPDATE', 'MESSAGES_UPSERT'],
+              }),
+              signal: AbortSignal.timeout(8000),
+            }).catch(() => null)
+          }
+        }
       }
       return reply.status(200).send({ received: true })
     }
