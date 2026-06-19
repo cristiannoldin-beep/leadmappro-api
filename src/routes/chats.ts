@@ -261,14 +261,42 @@ ${historico}`
 
     if (!EVO_URL || !EVO_KEY) return reply.status(400).send({ message: 'Evolution API não configurada (EVOLUTION_API_URL / EVOLUTION_API_KEY).' })
 
-    const conexao = body.conexaoId
+    // Busca conexão Evolution — tenta status 'connected' primeiro, depois qualquer uma
+    let conexao = body.conexaoId
       ? await prisma.whatsappConexao.findFirst({ where: { id: body.conexaoId, accountId, provider: 'evolution' } })
       : await prisma.whatsappConexao.findFirst({ where: { accountId, provider: 'evolution', status: 'connected' } })
-    if (!conexao?.instanceName) return reply.status(400).send({ message: 'Nenhuma conexão Evolution API ativa.' })
+
+    if (!conexao) {
+      // Fallback: qualquer conexão evolution e verifica status ao vivo
+      conexao = await prisma.whatsappConexao.findFirst({ where: { accountId, provider: 'evolution' } })
+    }
+    if (!conexao?.instanceName) return reply.status(400).send({ message: 'Nenhuma conexão WhatsApp Evolution cadastrada.' })
+
+    // Confirma status ao vivo na Evolution API e atualiza o banco
+    try {
+      const stateRes = await fetch(`${EVO_URL}/instance/connectionState/${conexao.instanceName}`, {
+        headers: { apikey: EVO_KEY },
+      })
+      if (stateRes.ok) {
+        const stateData = await stateRes.json() as Record<string, unknown>
+        const rawState = ((stateData.instance as Record<string, unknown>)?.state ?? stateData.state ?? '').toString().toLowerCase()
+        const isConnected = rawState === 'open' || rawState === 'connected'
+        if (isConnected && conexao.status !== 'connected') {
+          await prisma.whatsappConexao.update({ where: { id: conexao.id }, data: { status: 'connected' } })
+          conexao = { ...conexao, status: 'connected' }
+        }
+        if (!isConnected && rawState !== 'connecting') {
+          return reply.status(400).send({ message: 'Instância WhatsApp não está conectada. Reconecte o WhatsApp primeiro.' })
+        }
+      }
+    } catch { /* ignora erro de estado, tenta sincronizar mesmo assim */ }
 
     const headers = { 'Content-Type': 'application/json', apikey: EVO_KEY }
 
-    const chatRes = await fetch(`${EVO_URL}/chat/findChats/${conexao.instanceName}`, { headers })
+    const chatRes = await fetch(`${EVO_URL}/chat/findChats/${conexao.instanceName}`, {
+      method: 'POST',
+      headers,
+    })
     if (!chatRes.ok) return reply.status(502).send({ message: 'Erro ao buscar chats na Evolution API.' })
 
     const rawChats = await chatRes.json() as unknown[]
