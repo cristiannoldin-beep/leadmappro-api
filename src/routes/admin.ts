@@ -223,6 +223,15 @@ export async function adminRoutes(app: FastifyInstance) {
     })
   })
 
+  // ── Expirar trials vencidos manualmente ──────────────────────────────────
+  app.post('/admin/expirar-trials', { preValidation: [requireAdmin] }, async (_request, reply) => {
+    const { count } = await prisma.account.updateMany({
+      where: { status: 'trialing', trialEndsAt: { lt: new Date() } },
+      data: { status: 'suspended' },
+    })
+    return reply.send({ suspensos: count, message: `${count} conta(s) com trial expirado foram suspensas.` })
+  })
+
   // ── Logs (audit) ──────────────────────────────────────────────────────────
   app.get('/admin/logs', { preValidation: [requireAdmin] }, async (request, reply) => {
     const query = z.object({ page: z.coerce.number().default(1), limit: z.coerce.number().default(50) }).parse(request.query)

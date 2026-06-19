@@ -24,6 +24,8 @@ export async function requireActiveAccount(request: FastifyRequest, reply: Fasti
     if (!account) return reply.status(403).send({ message: 'Conta não encontrada.' })
     if (account.status === 'suspended') return reply.status(403).send({ message: 'Conta suspensa.' })
     if (account.status === 'trialing' && account.trialEndsAt && account.trialEndsAt < new Date()) {
+      // Atualiza status no banco (fire-and-forget — não bloqueia a resposta)
+      prisma.account.update({ where: { id: accountId }, data: { status: 'suspended' } }).catch(() => null)
       return reply.status(402).send({ message: 'Período de trial encerrado. Assine um plano para continuar.' })
     }
   } catch {

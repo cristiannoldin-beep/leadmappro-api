@@ -74,8 +74,23 @@ fastify.register(dashboardRoutes)
 fastify.register(crmRoutes)
 fastify.register(enriquecimentoRoutes)
 
+async function expireTrials() {
+  try {
+    const { count } = await prisma.account.updateMany({
+      where: { status: 'trialing', trialEndsAt: { lt: new Date() } },
+      data: { status: 'suspended' },
+    })
+    if (count > 0) fastify.log.info(`[trial] ${count} conta(s) expirada(s) e suspensa(s).`)
+  } catch (err) {
+    fastify.log.error({ err }, '[trial] Erro ao expirar trials.')
+  }
+}
+
 const start = async () => {
   await fastify.listen({ port: Number(process.env.PORT) || 3333, host: process.env.HOST || '0.0.0.0' })
+  // Roda imediatamente ao iniciar e depois a cada hora
+  expireTrials()
+  setInterval(expireTrials, 60 * 60 * 1000)
 }
 
 const signals: NodeJS.Signals[] = ['SIGTERM', 'SIGINT']
