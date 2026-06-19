@@ -27,7 +27,8 @@ export async function authRoutes(app: FastifyInstance) {
 
     const profile = await prisma.$transaction(async (tx) => {
       const totalUsers = await tx.profile.count()
-      const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)
+      const trialDays = Number(process.env.TRIAL_DAYS ?? 14)
+      const trialEndsAt = new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000)
       const account = await tx.account.create({
         data: {
           name: body.nomeCompleto,
