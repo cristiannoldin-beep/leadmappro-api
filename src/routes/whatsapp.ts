@@ -200,15 +200,16 @@ export async function whatsappRoutes(app: FastifyInstance) {
           ? await prisma.whatsappConexao.update({ where: { id: existing.id }, data: conexaoData })
           : await prisma.whatsappConexao.create({ data: conexaoData })
 
-        // Configura webhook apenas com eventos de status — MESSAGES_UPSERT é ativado
-        // no handler de CONNECTION_UPDATE após a conta estar estável e conectada.
+        // Configura webhook com todos os eventos necessários
         if (webhookUrl) {
           evoRequest('POST', `/webhook/set/${body.instanceName}`, {
-            enabled: true,
-            url: webhookUrl,
-            webhookByEvents: false,
-            webhookBase64: false,
-            events: ['QRCODE_UPDATED', 'CONNECTION_UPDATE'],
+            webhook: {
+              enabled: true,
+              url: webhookUrl,
+              webhookByEvents: false,
+              webhookBase64: false,
+              events: ['CONNECTION_UPDATE', 'MESSAGES_UPSERT'],
+            },
           }).catch(() => null)
         }
 

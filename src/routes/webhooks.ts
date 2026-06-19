@@ -113,11 +113,18 @@ export async function webhooksRoutes(app: FastifyInstance) {
         state?: string
         wuid?: string
         profileName?: string
-        key?: { remoteJid?: string; fromMe?: boolean; id?: string }
+        key?: {
+          remoteJid?: string
+          remoteJidAlt?: string
+          fromMe?: boolean
+          id?: string
+          participant?: string
+        }
         message?: { conversation?: string; extendedTextMessage?: { text?: string }; imageMessage?: { caption?: string }; videoMessage?: { caption?: string } }
         messageType?: string
         messageTimestamp?: number
         pushName?: string
+        participant?: string
       }
     }
 
@@ -133,10 +140,26 @@ export async function webhooksRoutes(app: FastifyInstance) {
         : rawState || 'disconnected'
 
       if (instanceName) {
-        await prisma.whatsappConexao.updateMany({
+        // Atualiza pelo instanceName exato; se não achar, auto-corrige pelo apelido similar
+        const updated = await prisma.whatsappConexao.updateMany({
           where: { instanceName },
           data: { status, updatedAt: new Date() },
         })
+
+        // Auto-healing: se não encontrou pelo nome exato, tenta achar conexão evolution
+        // com nome parecido e corrige o instanceName no banco
+        if (updated.count === 0) {
+          const candidate = await prisma.whatsappConexao.findFirst({
+            where: { provider: 'evolution' },
+            orderBy: { updatedAt: 'desc' },
+          })
+          if (candidate) {
+            await prisma.whatsappConexao.update({
+              where: { id: candidate.id },
+              data: { instanceName, status, updatedAt: new Date() },
+            })
+          }
+        }
 
         // Extrair e salvar número quando conectado (Evolution envia wuid: "5511999@s.whatsapp.net")
         if (status === 'connected' && payload.data?.wuid) {
@@ -149,7 +172,7 @@ export async function webhooksRoutes(app: FastifyInstance) {
           }
         }
 
-        // Conta estável — ativa eventos de mensagens no webhook (foi omitido na criação)
+        // Conta estável — configura/atualiza webhook com eventos de mensagens
         if (status === 'connected') {
           const evoUrl = (process.env.EVOLUTION_API_URL ?? '').replace(/\/+$/, '')
           const evoKey = process.env.EVOLUTION_API_KEY ?? ''
@@ -159,11 +182,13 @@ export async function webhooksRoutes(app: FastifyInstance) {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', apikey: evoKey },
               body: JSON.stringify({
-                enabled: true,
-                url: `${apiPublicUrl}/webhooks/evolution`,
-                webhookByEvents: false,
-                webhookBase64: false,
-                events: ['QRCODE_UPDATED', 'CONNECTION_UPDATE', 'MESSAGES_UPSERT'],
+                webhook: {
+                  enabled: true,
+                  url: `${apiPublicUrl}/webhooks/evolution`,
+                  webhookByEvents: false,
+                  webhookBase64: false,
+                  events: ['CONNECTION_UPDATE', 'MESSAGES_UPSERT'],
+                },
               }),
               signal: AbortSignal.timeout(8000),
             }).catch(() => null)
@@ -180,18 +205,42 @@ export async function webhooksRoutes(app: FastifyInstance) {
       if (fromMe) return reply.status(200).send({ received: true })
 
       const remoteJid = key?.remoteJid ?? ''
-      const telefone = remoteJid.replace('@s.whatsapp.net', '').replace('@c.us', '')
-      if (!telefone) return reply.status(200).send({ received: true })
+
+      // Suporte a JIDs no formato @lid (WhatsApp LID/Linked Device)
+      // remoteJidAlt ou participant contém o número real no formato @s.whatsapp.net
+      let telefoneRaw: string
+      if (remoteJid.endsWith('@lid')) {
+        const alt = key?.remoteJidAlt ?? payload.data?.participant ?? ''
+        telefoneRaw = alt.replace('@s.whatsapp.net', '').replace('@c.us', '')
+        if (!telefoneRaw) return reply.status(200).send({ received: true })
+      } else {
+        telefoneRaw = remoteJid.replace('@s.whatsapp.net', '').replace('@c.us', '')
+        if (!telefoneRaw || remoteJid.endsWith('@g.us')) return reply.status(200).send({ received: true })
+      }
 
       const msg = payload.data?.message
       const texto = msg?.conversation ?? msg?.extendedTextMessage?.text ?? msg?.imageMessage?.caption ?? msg?.videoMessage?.caption ?? ''
       if (!texto) return reply.status(200).send({ received: true })
 
-      const conexao = await prisma.whatsappConexao.findFirst({ where: { instanceName } })
+      // Busca conexão — tenta pelo instanceName exato, depois qualquer evolution
+      let conexao = await prisma.whatsappConexao.findFirst({ where: { instanceName } })
+      if (!conexao) {
+        conexao = await prisma.whatsappConexao.findFirst({
+          where: { provider: 'evolution' },
+          orderBy: { updatedAt: 'desc' },
+        })
+        // Corrige o instanceName stale para o correto
+        if (conexao) {
+          await prisma.whatsappConexao.update({
+            where: { id: conexao.id },
+            data: { instanceName, updatedAt: new Date() },
+          })
+        }
+      }
       if (!conexao) return reply.status(200).send({ received: true })
 
-      const telefoneFormatado = telefone.startsWith('55') ? telefone : `55${telefone}`
-      let contato = await prisma.contato.findFirst({ where: { telefone: { in: [telefone, telefoneFormatado] } } })
+      const telefoneFormatado = telefoneRaw.startsWith('55') ? telefoneRaw : `55${telefoneRaw}`
+      let contato = await prisma.contato.findFirst({ where: { telefone: { in: [telefoneRaw, telefoneFormatado] } } })
       if (!contato) {
         contato = await prisma.contato.create({
           data: {
@@ -209,8 +258,11 @@ export async function webhooksRoutes(app: FastifyInstance) {
           canal: 'whatsapp',
           conteudo: texto,
           externalId: key?.id,
+          data: payload.data?.messageTimestamp
+            ? new Date(payload.data.messageTimestamp * 1000)
+            : new Date(),
         },
-      })
+      }).catch(() => null)
     }
 
     return reply.status(200).send({ received: true })

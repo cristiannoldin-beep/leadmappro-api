@@ -347,4 +347,47 @@ export async function adminRoutes(app: FastifyInstance) {
 
     return reply.send({ sucesso, mensagem })
   })
+
+  // ── Sincroniza instanceNames com a Evolution API (corrige desalinhamentos no banco) ──
+  app.post('/admin/fix-evolution-instances', { preValidation: [requireAdmin] }, async (_request, reply) => {
+    const evoUrl = (process.env.EVOLUTION_API_URL ?? '').replace(/\/+$/, '')
+    const evoKey = process.env.EVOLUTION_API_KEY ?? ''
+    if (!evoUrl || !evoKey) return reply.status(400).send({ message: 'Evolution API não configurada.' })
+
+    const evoRes = await fetch(`${evoUrl}/instance/fetchInstances`, {
+      headers: { apikey: evoKey },
+    })
+    if (!evoRes.ok) return reply.status(502).send({ message: 'Erro ao buscar instâncias na Evolution API.' })
+
+    const evoInstances = await evoRes.json() as { name: string; connectionStatus: string; ownerJid?: string }[]
+    const conexoes = await prisma.whatsappConexao.findMany({ where: { provider: 'evolution' } })
+
+    const fixes: string[] = []
+
+    for (const conexao of conexoes) {
+      // Checa se o instanceName atual existe na Evolution
+      const match = evoInstances.find(i => i.name === conexao.instanceName)
+      if (match) continue // ok, nome está correto
+
+      // Tenta achar por similaridade de nome (case-insensitive, ignora sufixos numéricos)
+      const baseName = (conexao.apelido ?? conexao.instanceName ?? '').toLowerCase().replace(/[^a-z]/g, '')
+      const similar = evoInstances.find(i => {
+        const evoBase = i.name.toLowerCase().replace(/[^a-z]/g, '')
+        return evoBase.includes(baseName) || baseName.includes(evoBase)
+      })
+
+      if (similar) {
+        await prisma.whatsappConexao.update({
+          where: { id: conexao.id },
+          data: {
+            instanceName: similar.name,
+            status: similar.connectionStatus === 'open' ? 'connected' : 'disconnected',
+          },
+        })
+        fixes.push(`${conexao.instanceName} → ${similar.name}`)
+      }
+    }
+
+    return reply.send({ fixes, total: fixes.length })
+  })
 }
