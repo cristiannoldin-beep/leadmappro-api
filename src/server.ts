@@ -74,6 +74,37 @@ fastify.register(dashboardRoutes)
 fastify.register(crmRoutes)
 fastify.register(enriquecimentoRoutes)
 
+const DEFAULT_PLANS = [
+  {
+    name: 'Starter',
+    price: 97,
+    limits: { leads: 500, listas: 3, campanhas: 2, validacoesWhatsapp: 200, enriquecimentos: 50 },
+  },
+  {
+    name: 'Profissional',
+    price: 197,
+    limits: { leads: 2000, listas: 10, campanhas: 10, validacoesWhatsapp: 1000, enriquecimentos: 300 },
+  },
+  {
+    name: 'Agência',
+    price: 397,
+    limits: { leads: 10000, listas: 50, campanhas: 50, validacoesWhatsapp: 5000, enriquecimentos: 1000 },
+  },
+]
+
+async function seedDefaultPlans() {
+  try {
+    const count = await prisma.plan.count()
+    if (count > 0) return
+    for (const plan of DEFAULT_PLANS) {
+      await prisma.plan.create({ data: plan })
+    }
+    fastify.log.info('[seed] 3 planos padrão criados (Starter, Profissional, Agência).')
+  } catch (err) {
+    fastify.log.error({ err }, '[seed] Erro ao criar planos padrão.')
+  }
+}
+
 async function expireTrials() {
   try {
     const { count } = await prisma.account.updateMany({
@@ -88,7 +119,7 @@ async function expireTrials() {
 
 const start = async () => {
   await fastify.listen({ port: Number(process.env.PORT) || 3333, host: process.env.HOST || '0.0.0.0' })
-  // Roda imediatamente ao iniciar e depois a cada hora
+  seedDefaultPlans()
   expireTrials()
   setInterval(expireTrials, 60 * 60 * 1000)
 }
