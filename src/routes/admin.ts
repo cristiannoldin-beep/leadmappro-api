@@ -134,6 +134,26 @@ export async function adminRoutes(app: FastifyInstance) {
     return reply.send({ plans })
   })
 
+  app.post('/admin/plans', { preValidation: [requireAdmin] }, async (request, reply) => {
+    const limitsSchema = z.object({
+      leads: z.number().int().min(0).optional(),
+      listas: z.number().int().min(0).optional(),
+      campanhas: z.number().int().min(0).optional(),
+      validacoesWhatsapp: z.number().int().min(0).optional(),
+      enriquecimentos: z.number().int().min(0).optional(),
+    }).optional().default({})
+    const body = z.object({
+      name: z.string().min(1),
+      price: z.number().min(0),
+      limits: limitsSchema,
+    }).parse(request.body)
+
+    const plan = await prisma.plan.create({
+      data: { name: body.name, price: body.price, limits: body.limits ?? {} },
+    })
+    return reply.status(201).send({ plan })
+  })
+
   app.patch('/admin/plans/:id', { preValidation: [requireAdmin] }, async (request, reply) => {
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params)
     const body = z.object({
