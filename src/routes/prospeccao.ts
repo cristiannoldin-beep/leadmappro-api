@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { prisma } from '../lib/prisma'
 import { requireAuth, JwtPayload } from '../lib/auth'
 import { decrypt } from '../lib/encryption'
+import { checkLimit } from '../lib/limits'
 
 // ── Google Places API ────────────────────────────────────────────────────────
 const PLACES_API = 'https://places.googleapis.com/v1/places:searchText'
@@ -153,6 +154,7 @@ Regras:
   // ── 2. Buscar empresas no Google Maps ───────────────────────────────────
   app.post('/prospeccao/google-maps', { preValidation: [requireAuth] }, async (request, reply) => {
     const { accountId } = request.user as JwtPayload
+    await checkLimit(accountId, 'leads')
     const body = z.object({
       listaId: z.string().uuid(),
       query: z.string().min(1).optional(),

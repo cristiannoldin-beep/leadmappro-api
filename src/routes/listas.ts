@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma'
 import { requireAuth, requireActiveAccount, JwtPayload } from '../lib/auth'
+import { checkLimit } from '../lib/limits'
 
 export async function listasRoutes(app: FastifyInstance) {
   app.get('/listas', { preValidation: [requireAuth] }, async (request, reply) => {
@@ -17,6 +18,7 @@ export async function listasRoutes(app: FastifyInstance) {
 
   app.post('/listas', { preValidation: [requireActiveAccount] }, async (request, reply) => {
     const { sub: userId, accountId } = request.user as JwtPayload
+    await checkLimit(accountId, 'listas')
     const body = z.object({
       nome: z.string().min(1),
       origem: z.enum(['google_maps', 'parceiro_inativo', 'econodata', 'importacao']),

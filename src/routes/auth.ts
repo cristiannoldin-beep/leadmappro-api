@@ -30,12 +30,14 @@ export async function authRoutes(app: FastifyInstance) {
       const configDays = await tx.configuracaoIntegracao.findUnique({ where: { chave: 'TRIAL_DAYS' } })
       const trialDays = Number(configDays?.valor ?? process.env.TRIAL_DAYS ?? 14)
       const trialEndsAt = new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000)
+      const starterPlan = await tx.plan.findFirst({ orderBy: { price: 'asc' } })
       const account = await tx.account.create({
         data: {
           name: body.nomeCompleto,
           slug: `${body.email.split('@')[0]}-${Date.now()}`,
           status: 'trialing',
           trialEndsAt,
+          planId: starterPlan?.id ?? null,
         },
       })
       const p = await tx.profile.create({

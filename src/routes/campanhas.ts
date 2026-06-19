@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { prisma } from '../lib/prisma'
 import { requireAuth, requireActiveAccount, JwtPayload } from '../lib/auth'
 import { decrypt } from '../lib/encryption'
+import { checkLimit } from '../lib/limits'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -146,6 +147,7 @@ export async function campanhasRoutes(app: FastifyInstance) {
 
   app.post('/campanhas', { preValidation: [requireActiveAccount] }, async (request, reply) => {
     const { sub: userId, accountId } = request.user as JwtPayload
+    await checkLimit(accountId, 'campanhas')
     const body = z.object({
       nome: z.string().min(1),
       listaId: z.string().uuid(),
