@@ -2,28 +2,28 @@ import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma'
 import { requireAuth, JwtPayload } from '../lib/auth'
-import { decrypt } from '../lib/encryption'
-import { getCredencial, getUazapiConnection } from '../lib/credencial'
+import { getCredencial } from '../lib/credencial'
 
-async function sendViaWaha(accountId: string, telefone: string, mensagem: string, conexaoId?: string): Promise<boolean> {
+const EVO_URL = (process.env.EVOLUTION_API_URL ?? '').replace(/\/+$/, '')
+const EVO_KEY = process.env.EVOLUTION_API_KEY ?? ''
+
+async function sendViaEvolution(accountId: string, telefone: string, mensagem: string, conexaoId?: string): Promise<boolean> {
+  if (!EVO_URL || !EVO_KEY) return false
+
   const conexao = conexaoId
-    ? await prisma.whatsappConexao.findFirst({ where: { id: conexaoId, accountId } })
-    : await prisma.whatsappConexao.findFirst({ where: { accountId, status: 'connected' }, orderBy: { createdAt: 'asc' } })
+    ? await prisma.whatsappConexao.findFirst({ where: { id: conexaoId, accountId, provider: 'evolution' } })
+    : await prisma.whatsappConexao.findFirst({ where: { accountId, provider: 'evolution', status: 'connected' }, orderBy: { createdAt: 'asc' } })
 
-  if (!conexao?.instanceKey) return false
-
-  const globalUrl = await prisma.configuracaoIntegracao.findUnique({ where: { chave: 'UAZAPI_BASE_URL' } })
-  const cred = await prisma.credencial.findUnique({ where: { accountId_chave: { accountId, chave: 'UAZAPI_BASE_URL' } } })
-  const baseUrl = globalUrl?.valor ?? (cred?.ativa ? decrypt(cred.valorCriptografado) : 'https://api.uazapi.com')
+  if (!conexao?.instanceName) return false
 
   const numero = telefone.replace(/\D/g, '')
   const phone = numero.startsWith('55') ? numero : `55${numero}`
 
   try {
-    const res = await fetch(`${baseUrl}/message/sendText`, {
+    const res = await fetch(`${EVO_URL}/message/sendText/${conexao.instanceName}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', token: conexao.instanceKey },
-      body: JSON.stringify({ phone, body: mensagem }),
+      headers: { 'Content-Type': 'application/json', apikey: EVO_KEY },
+      body: JSON.stringify({ number: phone, text: mensagem }),
     })
     return res.ok
   } catch { return false }
@@ -124,7 +124,7 @@ export async function chatsRoutes(app: FastifyInstance) {
 
     // Enviar via WhatsApp (não bloqueia a resposta se falhar)
     if (contato.telefone) {
-      sendViaWaha(accountId, contato.telefone, body.conteudo, body.conexaoId).catch(() => {})
+      sendViaEvolution(accountId, contato.telefone, body.conteudo, body.conexaoId).catch(() => {})
     }
 
     return reply.status(201).send({ mensagem })
@@ -254,45 +254,37 @@ ${historico}`
     return reply.send({ sentimento: 'neutro', score: 0 })
   })
 
-  // Substitui: sincronizar-chats — importa histórico UazAPI para o banco
+  // Importa histórico do WhatsApp via Evolution API para o banco local
   app.post('/chats/sincronizar', { preValidation: [requireAuth] }, async (request, reply) => {
     const { accountId } = request.user as JwtPayload
     const body = z.object({ conexaoId: z.string().uuid().optional() }).parse(request.body)
 
-    const waha = await getUazapiConnection(accountId)
-    if (!waha) return reply.status(400).send({ message: 'Nenhuma conexão WhatsApp ativa.' })
+    if (!EVO_URL || !EVO_KEY) return reply.status(400).send({ message: 'Evolution API não configurada (EVOLUTION_API_URL / EVOLUTION_API_KEY).' })
 
     const conexao = body.conexaoId
-      ? await prisma.whatsappConexao.findFirst({ where: { id: body.conexaoId, accountId } })
-      : await prisma.whatsappConexao.findFirst({ where: { accountId, status: 'connected' } })
-    if (!conexao?.instanceKey) return reply.status(400).send({ message: 'Conexão não encontrada.' })
+      ? await prisma.whatsappConexao.findFirst({ where: { id: body.conexaoId, accountId, provider: 'evolution' } })
+      : await prisma.whatsappConexao.findFirst({ where: { accountId, provider: 'evolution', status: 'connected' } })
+    if (!conexao?.instanceName) return reply.status(400).send({ message: 'Nenhuma conexão Evolution API ativa.' })
 
-    const headers = { 'Content-Type': 'application/json', token: conexao.instanceKey }
+    const headers = { 'Content-Type': 'application/json', apikey: EVO_KEY }
 
-    // 1. Buscar todos os chats individuais
-    const chatRes = await fetch(`${waha.baseUrl}/chat/find`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ sort: '-wa_lastMsgTimestamp', limit: 200, offset: 0, wa_isGroup: false }),
-    })
-    if (!chatRes.ok) return reply.status(502).send({ message: 'Erro ao buscar chats na UazAPI.' })
+    const chatRes = await fetch(`${EVO_URL}/chat/findChats/${conexao.instanceName}`, { headers })
+    if (!chatRes.ok) return reply.status(502).send({ message: 'Erro ao buscar chats na Evolution API.' })
 
-    const chatData = await chatRes.json() as { chats?: unknown[] } | unknown[]
-    const chats: Record<string, unknown>[] = (Array.isArray(chatData) ? chatData : (chatData as { chats?: unknown[] }).chats ?? []) as Record<string, unknown>[]
+    const rawChats = await chatRes.json() as unknown[]
+    const chats = (Array.isArray(rawChats) ? rawChats : []) as Record<string, unknown>[]
+    const individual = chats.filter(c => !String(c.id ?? c.remoteJid ?? '').endsWith('@g.us')).slice(0, 200)
 
     let syncedChats = 0
     let syncedMessages = 0
 
-    for (const chat of chats) {
-      const chatId = String(chat.wa_chatid ?? chat.wa_fastid ?? '')
-      if (!chatId) continue
-
-      const rawPhone = chatId.replace(/@s\.whatsapp\.net$/, '').replace(/@.*$/, '')
+    for (const chat of individual) {
+      const remoteJid = String(chat.id ?? chat.remoteJid ?? '')
+      if (!remoteJid) continue
+      const rawPhone = remoteJid.replace(/@s\.whatsapp\.net$/, '').replace(/@.*$/, '')
       if (!rawPhone || rawPhone.length < 8) continue
+      const waName = String(chat.name ?? chat.pushName ?? rawPhone)
 
-      const waName = String(chat.wa_contactName ?? chat.wa_name ?? chat.name ?? rawPhone)
-
-      // Upsert contato
       let contato = await prisma.contato.findFirst({ where: { telefone: { in: [rawPhone, `55${rawPhone}`] } } })
       if (!contato) {
         contato = await prisma.contato.create({ data: { nomeEmpresa: waName, contatoNome: waName, telefone: rawPhone } }).catch(() => null as never)
@@ -301,21 +293,24 @@ ${historico}`
       }
       if (!contato) continue
 
-      // Buscar mensagens do chat
-      const msgRes = await fetch(`${waha.baseUrl}/message/find`, {
+      const msgRes = await fetch(`${EVO_URL}/chat/findMessages/${conexao.instanceName}`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ chatid: chatId, limit: 50, offset: 0 }),
+        body: JSON.stringify({ where: { key: { remoteJid } }, limit: 50 }),
       })
       if (!msgRes.ok) continue
 
-      const msgData = await msgRes.json() as { messages?: unknown[] } | unknown[]
-      const messages: Record<string, unknown>[] = (Array.isArray(msgData) ? msgData : (msgData as { messages?: unknown[] }).messages ?? []) as Record<string, unknown>[]
+      const msgRaw = await msgRes.json() as unknown
+      const records = Array.isArray(msgRaw)
+        ? msgRaw
+        : ((msgRaw as { messages?: { records?: unknown[] } }).messages?.records ?? [])
+      const messages = records as Record<string, unknown>[]
 
       for (const msg of messages) {
-        const msgId = String(msg.id ?? msg.messageid ?? msg.messageId ?? '')
-        const fromMe = msg.fromMe === true
-        const timestamp = Number(msg.timestamp ?? msg.messageTimestamp ?? 0)
+        const key = msg.key as Record<string, unknown> | undefined
+        const msgId = String(key?.id ?? msg.id ?? '')
+        const fromMe = key?.fromMe === true
+        const timestamp = Number(msg.messageTimestamp ?? 0)
         const msgDate = timestamp ? new Date(timestamp * 1000) : new Date()
 
         const msgContent = msg.message as Record<string, unknown> | undefined
@@ -328,33 +323,21 @@ ${historico}`
         else if (msgContent?.locationMessage) mediaType = 'localizacao'
 
         const texto = String(
-          msg.text ?? msg.content ??
           (msgContent?.conversation) ??
           (msgContent?.extendedTextMessage as Record<string, unknown> | undefined)?.text ??
-          `[${mediaType}]`
+          msg.text ?? `[${mediaType}]`
         )
 
-        // Evitar duplicatas
         if (msgId) {
           const exists = await prisma.interacao.findFirst({ where: { externalId: msgId } })
           if (exists) continue
         }
 
         await prisma.interacao.create({
-          data: {
-            contatoId: contato.id,
-            accountId,
-            data: msgDate,
-            direcao: fromMe ? 'enviado' : 'recebido',
-            canal: 'whatsapp',
-            conteudo: texto,
-            mediaType,
-            externalId: msgId || undefined,
-          },
+          data: { contatoId: contato.id, accountId, data: msgDate, direcao: fromMe ? 'enviado' : 'recebido', canal: 'whatsapp', conteudo: texto, mediaType, externalId: msgId || undefined },
         }).catch(() => null)
         syncedMessages++
       }
-
       syncedChats++
     }
 
