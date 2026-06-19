@@ -223,6 +223,23 @@ export async function adminRoutes(app: FastifyInstance) {
     })
   })
 
+  // ── System config (configurações não-sensíveis do SaaS) ──────────────────
+  app.get('/admin/system-config', { preValidation: [requireAdmin] }, async (_request, reply) => {
+    const row = await prisma.configuracaoIntegracao.findUnique({ where: { chave: 'TRIAL_DAYS' } })
+    const trialDays = Number(row?.valor ?? process.env.TRIAL_DAYS ?? 14)
+    return reply.send({ trialDays })
+  })
+
+  app.post('/admin/system-config', { preValidation: [requireAdmin] }, async (request, reply) => {
+    const body = z.object({ trialDays: z.number().int().min(1).max(365) }).parse(request.body)
+    await prisma.configuracaoIntegracao.upsert({
+      where: { chave: 'TRIAL_DAYS' },
+      update: { valor: String(body.trialDays), atualizadoEm: new Date() },
+      create: { chave: 'TRIAL_DAYS', valor: String(body.trialDays) },
+    })
+    return reply.send({ trialDays: body.trialDays })
+  })
+
   // ── Expirar trials vencidos manualmente ──────────────────────────────────
   app.post('/admin/expirar-trials', { preValidation: [requireAdmin] }, async (_request, reply) => {
     const { count } = await prisma.account.updateMany({
