@@ -207,10 +207,29 @@ export async function webhooksRoutes(app: FastifyInstance) {
       const remoteJid = key?.remoteJid ?? ''
 
       // Suporte a JIDs no formato @lid (WhatsApp LID/Linked Device)
-      // remoteJidAlt ou participant contém o número real no formato @s.whatsapp.net
+      // remoteJidAlt pode vir no payload ou precisa ser resolvido via Evolution API
       let telefoneRaw: string
       if (remoteJid.endsWith('@lid')) {
-        const alt = key?.remoteJidAlt ?? payload.data?.participant ?? ''
+        let alt = key?.remoteJidAlt ?? payload.data?.participant ?? ''
+        if (!alt && instanceName) {
+          // Resolve LID → telefone real consultando o histórico do chat
+          try {
+            const evoUrl = (process.env.EVOLUTION_API_URL ?? '').replace(/\/+$/, '')
+            const evoKey = process.env.EVOLUTION_API_KEY ?? ''
+            if (evoUrl && evoKey) {
+              const res = await fetch(`${evoUrl}/chat/findMessages/${instanceName}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', apikey: evoKey },
+                body: JSON.stringify({ where: { key: { remoteJid } }, limit: 1 }),
+                signal: AbortSignal.timeout(5000),
+              })
+              if (res.ok) {
+                const data = await res.json() as { messages?: { records?: { key?: { remoteJidAlt?: string } }[] } }
+                alt = data.messages?.records?.[0]?.key?.remoteJidAlt ?? ''
+              }
+            }
+          } catch { /* ignora erro, continua sem telefone */ }
+        }
         telefoneRaw = alt.replace('@s.whatsapp.net', '').replace('@c.us', '')
         if (!telefoneRaw) return reply.status(200).send({ received: true })
       } else {
